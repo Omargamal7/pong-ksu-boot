@@ -240,7 +240,10 @@ preflight_config_sha256="$(sha256sum "$OUTPUT_DIR/.config" | cut -d ' ' -f 1)"
     "$OUTPUT_DIR/security/selinux/flask.h" "$OUTPUT_DIR/security/selinux/av_permissions.h"
   make -C "$SOURCE" O="$OUTPUT_DIR" -j"${JOBS:-$(nproc)}" drivers/kernelsu/
   test -s "$OUTPUT_DIR/drivers/kernelsu/core/init.o"
-  test -s "$OUTPUT_DIR/drivers/kernelsu/hook/arm64/syscall_hook.o"
+  # With CONFIG_KSU_SUSFS, dev-susfs's Kbuild drops the syscall-hook objects in
+  # favour of SUSFS's inline hooks; their absence proves that path was selected.
+  test ! -e "$OUTPUT_DIR/drivers/kernelsu/hook/arm64/syscall_hook.o"
+  test -s "$OUTPUT_DIR/drivers/kernelsu/hook/setuid_hook.o"
   test -s "$OUTPUT_DIR/drivers/kernelsu/built-in.a"
 } 2>&1 | tee "$OUTPUT_DIR/preflight.log"
 [ "$(sha256sum "$OUTPUT_DIR/.config" | cut -d ' ' -f 1)" = "$preflight_config_sha256" ] || fail 'configuration changed during root-driver preflight'
