@@ -52,6 +52,32 @@ python3 -m unittest discover -s tests -v
 bash -n scripts/build_lunaris_kernel.sh
 ```
 
+## Parallel Codespaces backup
+
+Create a Codespace for this repository using the **Lunaris KernelSU Next cloud
+build** configuration. Select a machine with **16 cores / 128 GB storage** so the
+persistent build has more disk headroom than the standard Actions runner:
+
+https://github.com/codespaces/new?repo=1293663412&ref=master
+
+The post-create command starts the build in the background. Read its progress in
+`work/cloud/session.log`; compiled objects and downloads remain in `work/cloud/`
+for incremental retries. A passing build publishes the same verified files to
+the private prerelease `lunaris-ksunext-v3.4.2-test-candidate`. No phone resources
+are used and no partition is flashed. Stop the Codespace after collecting the
+result to avoid leaving cloud compute running.
+
+```sh
+tail -f work/cloud/session.log
+# Resume a failed build without deleting its compiled objects:
+bash scripts/build_lunaris_cloud.sh --background
+```
+
+The script requires at least 45 GiB free before its first source fetch and keeps
+the builder's 35 GiB pre-compilation check. It refuses unrelated edits in its
+private source checkout. Use `--no-publish` when only local Codespace artifacts
+are wanted. Existing Actions runs continue independently.
+
 ## Earlier Lineage module patcher
 
 `Patch boot.img with KernelSU-Next` is the older, independent LKM workflow. It
