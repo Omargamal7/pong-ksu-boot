@@ -45,6 +45,24 @@ REQUIRED_BUILT = {
     "CONFIG_KSU_DISABLE_MANAGER": "n",
     "CONFIG_KSU_DISABLE_POLICY": "n",
 }
+# Experimental pershoot dev-susfs core: its extra Kconfig entries may only appear
+# as absent-to-value transitions. Samsung helpers are forced off; SUSFS stays on.
+SUSFS_FEATURES = (
+    "SUS_PATH", "SUS_MOUNT", "SUS_KSTAT", "SPOOF_UNAME", "ENABLE_LOG",
+    "HIDE_KSU_SUSFS_SYMBOLS", "SPOOF_CMDLINE_OR_BOOTCONFIG", "OPEN_REDIRECT", "SUS_MAP",
+)
+SUSFS_TRANSITIONS: dict[str, tuple[str | None, str | None]] = {
+    **APPROVED_TRANSITIONS,
+    "CONFIG_KSU_CONTAINER_COMPAT": (None, "n"),
+    "CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED": (None, "y"),
+    **{f"CONFIG_KSU_SAMSUNG_{name}": (None, "n") for name in ("KDP", "RKP", "DEFEX", "NO_PATCH_TEXT")},
+    "CONFIG_KSU_SUSFS": (None, "y"),
+    **{f"CONFIG_KSU_SUSFS_{name}": (None, "y") for name in SUSFS_FEATURES},
+}
+PROFILES = {
+    "next": (APPROVED_TRANSITIONS, REQUIRED_BUILT),
+    "next-susfs": (SUSFS_TRANSITIONS, {**REQUIRED_BUILT, **{key: built for key, (_, built) in SUSFS_TRANSITIONS.items()}}),
+}
 FORBIDDEN_ENABLED = {
     "CONFIG_CFI_CLANG", "CONFIG_CFI_CLANG_SHADOW", "CONFIG_CFI_PERMISSIVE",
     "CONFIG_LTO", "CONFIG_LTO_CLANG", "CONFIG_LTO_CLANG_FULL", "CONFIG_LTO_CLANG_THIN",
@@ -93,7 +111,8 @@ def parse_config(text: str) -> dict[str, str]:
     return result
 
 
-def validate_configs(original: Mapping[str, str], built: Mapping[str, str]) -> dict:
+def validate_configs(original: Mapping[str, str], built: Mapping[str, str], profile: str = "next") -> dict:
+    approved, required_built = PROFILES[profile]
     changes = {
         key: {"original": original.get(key), "built": built.get(key)}
         for key in sorted(original.keys() | built.keys())
@@ -101,7 +120,7 @@ def validate_configs(original: Mapping[str, str], built: Mapping[str, str]) -> d
     }
     unexpected = [
         key for key, change in changes.items()
-        if APPROVED_TRANSITIONS.get(key) != (change["original"], change["built"])
+        if approved.get(key) != (change["original"], change["built"])
     ]
     baseline_failures = {
         key: {"expected": expected, "original": original.get(key)}
@@ -110,7 +129,7 @@ def validate_configs(original: Mapping[str, str], built: Mapping[str, str]) -> d
     }
     required_failures = {
         key: {"expected": expected, "built": built.get(key)}
-        for key, expected in REQUIRED_BUILT.items()
+        for key, expected in required_built.items()
         if built.get(key) != expected
     }
     # Kconfig can omit known disabled features. Their spelling is still compared
@@ -122,6 +141,7 @@ def validate_configs(original: Mapping[str, str], built: Mapping[str, str]) -> d
     return {
         "schema_version": 2,
         "profile": PROFILE,
+        "transition_profile": profile,
         "valid": valid,
         "embedded_config_used_as_baseline": False,
         "changes": changes,
@@ -140,6 +160,7 @@ def main() -> int:
     parser.add_argument("--original", required=True, type=Path, help="resolved effective Meteoric baseline.config")
     parser.add_argument("--built", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="next")
     args = parser.parse_args()
     report = {"schema_version": 2, "profile": PROFILE, "valid": False}
     try:
@@ -147,6 +168,7 @@ def main() -> int:
         report = validate_configs(
             parse_config(original_bytes.decode("utf-8")),
             parse_config(built_bytes.decode("utf-8")),
+            args.profile,
         )
         report["baseline_config_sha256"] = hashlib.sha256(original_bytes).hexdigest()
         report["built_config_sha256"] = hashlib.sha256(built_bytes).hexdigest()
