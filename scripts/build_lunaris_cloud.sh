@@ -7,21 +7,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$REPO_DIR"
 mkdir -p work/cloud
+BACKGROUND=false
 if [ "${1:-}" = --background ]; then
+  BACKGROUND=true
   shift
-  nohup bash "$SCRIPT_DIR/build_lunaris_cloud.sh" "$@" \
+fi
+INHERITED_LOCK=false
+if [ "${1:-}" = --lock-held ]; then INHERITED_LOCK=true; shift; fi
+PUBLISH=true
+if [ "${1:-}" = --no-publish ]; then PUBLISH=false; shift; fi
+[ "$#" = 0 ] || fail 'usage: build_lunaris_cloud.sh [--background] [--no-publish]'
+command -v flock >/dev/null || fail 'flock is required'
+if [ "$INHERITED_LOCK" = true ]; then
+  [ "$(readlink "/proc/$$/fd/9")" = "$(realpath work/cloud/build.lock)" ] || \
+    fail 'the inherited build lock is missing'
+else
+  exec 9>work/cloud/build.lock
+fi
+flock -n 9 || fail 'another cloud build already holds the build lock'
+if [ "$BACKGROUND" = true ]; then
+  arguments=(--lock-held)
+  if [ "$PUBLISH" = false ]; then arguments+=(--no-publish); fi
+  # Descriptor 9 remains locked across nohup/exec. Obtain it before touching
+  # the active build's log or PID, including on a second post-create launch.
+  nohup bash "$SCRIPT_DIR/build_lunaris_cloud.sh" "${arguments[@]}" \
     > work/cloud/session.log 2>&1 < /dev/null &
   printf '%s\n' "$!" > work/cloud/build.pid
   printf 'Cloud build started. Follow: tail -f work/cloud/session.log\n'
   exit 0
 fi
-PUBLISH=true
-if [ "${1:-}" = --no-publish ]; then PUBLISH=false; shift; fi
-[ "$#" = 0 ] || fail 'usage: build_lunaris_cloud.sh [--background] [--no-publish]'
 [ "$(uname -m)" = x86_64 ] || fail 'this cloud build requires Linux x86_64'
-command -v flock >/dev/null || fail 'flock is required'
-exec 9>work/cloud/build.lock
-flock -n 9 || fail 'another cloud build already holds the build lock'
 
 REPOSITORY=Omargamal7/pong-ksu-boot
 COMMON_COMMIT=744d5c916fbbd6fb15f92c69c32de440d7345c6f
