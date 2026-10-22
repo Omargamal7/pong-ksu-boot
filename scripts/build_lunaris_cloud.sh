@@ -46,6 +46,8 @@ TOOLCHAIN_COMMIT=2d4dcbff7cb42f360f368bacf51cfe711fd1cb0f
 BUILD_INFO_SHA256=56cfce8294ee8bff7150f1bb666ce84986d8e51931df5889a29ba89cf3a0db0f
 BUILD_PROFILE=meteoric-r547379-lto-none-v1
 BOOT_TOOLS_COMMIT=d2bb0af5ba6d3198a3e99529c97eda1be0b5a093
+AVB_COMMIT=761178607206f4cb2af79ed9eec52d8cbd814adb
+AVBTOOL_SHA256=e5a664a38db623da00f080219bc0ee60a640a9dc4a872803616fae4938ac749b
 ABI_EXTRACTOR_COMMIT=2d094bc9c220b6b50f8215cbc3c9e581210ce1a6
 BOOT_SHA256=f86ca8c2a1f731a921813cecf0de1d693ed795f684cfb10cf1140bee4781cc7d
 MANAGER_SHA256=774a5511f7034a4930e881114e202319cbdc34c5aaaa5c7c6b6d2902364e4c58
@@ -114,6 +116,9 @@ fetch_pinned() {
 }
 fetch_pinned "$WORK/source" "https://github.com/$SOURCE_REPO.git" "$COMMON_COMMIT"
 fetch_pinned "$WORK/mkbootimg" https://android.googlesource.com/platform/system/tools/mkbootimg "$BOOT_TOOLS_COMMIT"
+fetch_pinned "$WORK/avb" https://android.googlesource.com/platform/external/avb "$AVB_COMMIT"
+printf '%s  %s\n' "$AVBTOOL_SHA256" "$WORK/avb/avbtool.py" | sha256sum --check --strict
+AVBTOOL="$WORK/avb/avbtool.py" "$WORK/abi-venv/bin/python" -m unittest tests.test_avb_footer -v
 if [ ! -d "$WORK/KernelSU-Next/.git" ]; then
   git clone --filter=blob:none --single-branch --branch v3.4.2 \
     https://github.com/KernelSU-Next/KernelSU-Next.git "$WORK/KernelSU-Next"
@@ -241,10 +246,16 @@ bash scripts/build_lunaris_kernel.sh \
 # Start a fresh candidate directory only after compilation and ABI checks pass.
 # Do not reuse a stale image after a failed rerun.
 mkdir -p "$DIST"
-rm -f "$DIST/boot-lunaris-ksunext-v3.4.2.img" "$DIST/SHA256SUMS"
+rm -f "$DIST/boot-lunaris-ksunext-v3.4.2.img" "$DIST/boot-lunaris-ksunext-v3.4.2.metadata.json" \
+  "$DIST/boot-lunaris-ksunext-v3.4.2.avb.json" "$DIST/repack-metadata.json" "$DIST/SHA256SUMS"
+rm -rf "$WORK/repack"
 python3 scripts/repack_lunaris_boot.py --base "$BOOT" \
   --kernel "$WORK/build/Image" --tools "$WORK/mkbootimg" \
-  --output "$DIST/boot-lunaris-ksunext-v3.4.2.img" --partition-size 100663296
+  --output "$WORK/repack/boot-lunaris-ksunext-v3.4.2.img" --partition-size 100663296
+python3 scripts/add_lunaris_avb_footer.py --base "$BOOT" \
+  --image "$WORK/repack/boot-lunaris-ksunext-v3.4.2.img" --avbtool "$WORK/avb/avbtool.py" \
+  --output "$DIST/boot-lunaris-ksunext-v3.4.2.img"
+cp "$WORK/repack/boot-lunaris-ksunext-v3.4.2.metadata.json" "$DIST/repack-metadata.json"
 MANAGER="$DIST/KernelSU_Next_v3.4.2_33355-release.apk"
 if [ ! -f "$MANAGER" ]; then
   gh release download v3.4.2 --repo KernelSU-Next/KernelSU-Next \
@@ -278,6 +289,8 @@ manifest = {
     'compiler_build_info_sha256': digest(work / 'toolchain/BUILD_INFO'),
     'compiler': subprocess.check_output([str(work / 'toolchain/bin/clang'), '--version'], text=True).splitlines()[0],
     'boot_tools_source': revision(work / 'mkbootimg'),
+    'avbtool_source': revision(work / 'avb'),
+    'avb_footer': 'unsigned hash footer copying the original fields; vbmeta partition unchanged',
     'abi_extractor_source': os.environ['ABI_EXTRACTOR_COMMIT'],
     'abi_whitelist_sha256': digest(work / 'original/abi_symbollist.raw'),
     'build_definition_commit': revision(pathlib.Path.cwd()),
