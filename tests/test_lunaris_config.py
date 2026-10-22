@@ -90,6 +90,35 @@ class ConfigValidationTests(unittest.TestCase):
                 self.assertFalse(result["valid"])
                 self.assertIn(key, result["required_failures"])
 
+    def susfs_pair(self):
+        original, built = profile_pair()
+        built.update({key: value for key, (_, value) in config.SUSFS_TRANSITIONS.items()})
+        return original, built
+
+    def test_susfs_profile_accepts_only_its_reviewed_transitions(self):
+        original, built = self.susfs_pair()
+        result = config.validate_configs(original, built, "next-susfs")
+        self.assertTrue(result["valid"], result)
+        self.assertEqual(set(result["changes"]), set(config.SUSFS_TRANSITIONS))
+
+    def test_susfs_profile_rejects_samsung_helpers_left_enabled(self):
+        original, built = self.susfs_pair()
+        built["CONFIG_KSU_SAMSUNG_KDP"] = "y"
+        result = config.validate_configs(original, built, "next-susfs")
+        self.assertFalse(result["valid"])
+        self.assertIn("CONFIG_KSU_SAMSUNG_KDP", result["unexpected"])
+
+    def test_susfs_profile_requires_every_susfs_feature(self):
+        original, built = self.susfs_pair()
+        built["CONFIG_KSU_SUSFS_SUS_MAP"] = "n"
+        self.assertFalse(config.validate_configs(original, built, "next-susfs")["valid"])
+
+    def test_default_profile_still_rejects_susfs(self):
+        original, built = self.susfs_pair()
+        result = config.validate_configs(original, built)
+        self.assertFalse(result["valid"])
+        self.assertIn("CONFIG_KSU_SUSFS", result["unexpected"])
+
     def test_unknown_ksu_prefixed_feature_is_not_blanket_allowed(self):
         original, built = profile_pair()
         built["CONFIG_KSU_SUSFS"] = "y"

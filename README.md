@@ -91,6 +91,36 @@ bash -n scripts/build_lunaris_kernel.sh
 AVBTOOL=/path/to/avbtool.py python3 -m unittest tests.test_avb_footer -v
 ```
 
+## Experimental: KernelSU Next dev-susfs (SUSFS v2.3.0 built in)
+
+**Actions → EXPERIMENTAL Build Lunaris KernelSU Next dev-susfs** is a separate
+prototype. It never replaces the release workflow's artifacts. It differs only in:
+
+- Root core: [pershoot/KernelSU-Next](https://github.com/pershoot/KernelSU-Next)
+  `dev-susfs` commit `d21e0a66c887ae4bc75b7c9f83e41761819ec09a`. That is official
+  `dev` at `b427a3f9c242` plus the official `test` branch's Samsung commits and
+  pershoot's SUSFS v2.3.0 integration. It is not a KernelSU Next release. Its
+  Kbuild reports driver version 33405 and tag v3.4.2, which the build asserts.
+- Kernel side: simonpunk [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)
+  `gki-android12-5.10` commit `f43926dc94b8ffbf9b74321313536600f69367b1`
+  (`SUSFS_VERSION v2.3.0`). Its README says the patches target official
+  KernelSU; pairing them with dev-susfs is untested upstream. One hunk needs
+  fuzz 1 (Android's 16K padding changed `show_smap`); the build allows only that
+  hunk and checks where it lands.
+- The kernel patch calls `ksu_handle_sys_read(fd)` with one argument while
+  dev-susfs defines three; the build fails if dev-susfs ever starts reading the
+  two extra parameters.
+- Configuration: Samsung helpers off, `CONFIG_KSU_SUSFS` and all nine SUSFS
+  features on, checked by `verify_lunaris_config.py --profile next-susfs`. The
+  same 14,523-export ABI comparison, repack and AVB footer apply.
+- Manager: dev-susfs speaks KernelSU UAPI 6. The v3.4.2 release's `ksud`
+  requires an exact match (UAPI 5) and skips post-fs-data otherwise. The
+  workflow therefore tries to fetch the official CI manager built from the same
+  `dev` commit (run 39297115788, artifact 12209218898) and checks its signing
+  certificate the way the kernel does (`scripts/verify_manager_apk.py`). That
+  cross-repository download is untested; if it fails, download the `manager`
+  artifact from that run while signed in to GitHub.
+
 ## Parallel Codespaces backup
 
 Create a Codespace for this repository using the **Lunaris KernelSU Next cloud
