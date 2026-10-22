@@ -33,14 +33,23 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          mkdir -p work
+          df -h "$GITHUB_WORKSPACE" > work/runner-storage.log
+          sudo du -xsh /opt/hostedtoolcache /usr/lib/jvm /usr/local/share/chromium \
+            /opt/google /opt/microsoft /usr/local/julia* \
+            >> work/runner-storage.log 2>/dev/null || true
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-            /usr/local/share/powershell /opt/az /usr/share/swift
-          sudo docker system prune --all --force || true
-          df -h "$GITHUB_WORKSPACE"
+            /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/local/share/powershell /opt/az /usr/share/swift /usr/lib/jvm \
+            /usr/local/share/chromium /opt/google /opt/microsoft /usr/local/julia*
+          sudo docker system prune --all --force > work/runner-docker-prune.log 2>&1 || true
+          sudo apt-get clean
+          df -h "$GITHUB_WORKSPACE" >> work/runner-storage.log
+          cat work/runner-storage.log
           available=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')
-          test "$available" -ge $((60 * 1024 * 1024)) || {
-            echo 'At least 60 GiB free space is required before fetching build inputs.' >&2
+          test "$available" -ge $((45 * 1024 * 1024)) || {
+            echo 'At least 45 GiB free space is required before fetching build inputs.' >&2
             exit 1
           }
 
@@ -215,6 +224,8 @@ jobs:
         with:
           name: lunaris-ksunext-diagnostics-${{ github.run_attempt }}
           path: |
+            work/runner-storage.log
+            work/runner-docker-prune.log
             work/original/metadata.json
             work/original/abi-baseline.json
             work/original/abi_symbollist.raw
@@ -227,4 +238,5 @@ jobs:
             work/build/System.map
             work/abi-report.json
           if-no-files-found: ignore
+          include-hidden-files: true
           retention-days: 14
