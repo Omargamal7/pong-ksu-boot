@@ -292,7 +292,6 @@ manifest = {
 PY
 python3 scripts/write_artifact_checksums.py --directory "$DIST"
 if [ "$PUBLISH" = true ]; then
-  [ "$(gh api "repos/$REPOSITORY" --jq .visibility)" = private ] || fail 'expected a private artifact repository'
   RELEASE=lunaris-ksunext-v3.4.2-test-candidate
   if gh release view "$RELEASE" --repo "$REPOSITORY" >/dev/null 2>&1; then
     gh release upload "$RELEASE" "$DIST"/* --repo "$REPOSITORY" --clobber

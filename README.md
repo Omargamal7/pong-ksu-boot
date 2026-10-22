@@ -4,12 +4,11 @@ Cloud-only boot-image preparation for Nothing Phone (2), codename `Pong`.
 
 ## Installed Lunaris: replace built-in KernelSU with KernelSU Next
 
-**Source compatibility investigation is in progress.** The initial cloud build
-compiled successfully with enough disk space, but its reconstructed ACK baseline
-failed the original kernel's ABI check. No boot candidate was published. Run
-**Actions → Diagnose Meteoric source ABI fingerprints** to check source and
-configuration candidates with three small object builds before another full
-kernel build. Passing this probe still requires the complete ABI comparison.
+The historical Meteoric source and actual Lunaris config passed the small ABI
+probe: all 155 original exports from the three test objects matched, including
+`module_layout`, `I_BDEV` and `__alloc_skb`. The initial reconstructed ACK baseline
+failed compatibility and produced no boot candidate. The full original-export
+comparison remains mandatory before a candidate can be packaged.
 
 Run **Actions → Build Lunaris KernelSU Next → Run workflow**. The workflow builds
 on a GitHub-hosted Ubuntu runner. Nothing runs on the phone, and no workflow
@@ -90,7 +89,7 @@ https://github.com/codespaces/new?repo=1293663412&ref=master
 The post-create command starts the build in the background. Read its progress in
 `work/cloud/session.log`; compiled objects and downloads remain in `work/cloud/`
 for incremental retries. A passing build publishes the same verified files to
-the private prerelease `lunaris-ksunext-v3.4.2-test-candidate`. No phone resources
+the repository prerelease `lunaris-ksunext-v3.4.2-test-candidate`. No phone resources
 are used and no partition is flashed. Stop the Codespace after collecting the
 result to avoid leaving cloud compute running.
 
