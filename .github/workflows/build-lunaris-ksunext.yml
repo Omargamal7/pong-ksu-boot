@@ -113,7 +113,7 @@ jobs:
 
       - name: Restore pinned Android Clang
         id: clang-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: work/toolchain
           key: lunaris-clang-r416183b-${{ env.TOOLCHAIN_COMMIT }}
@@ -129,11 +129,28 @@ jobs:
           tar -xzf work/clang.tar.gz -C work/toolchain --strip-components=1
           rm work/clang.tar.gz
 
+      - name: Verify pinned Android Clang
+        id: verify-clang
+        run: |
+          set -euo pipefail
+          test -x work/toolchain/bin/clang
+          test -x work/toolchain/bin/ld.lld
+          work/toolchain/bin/clang --version | head -1 | tee work/toolchain-version.txt
+          grep -Fq 'clang version 12.0.5' work/toolchain-version.txt
+
+      - name: Save verified Android Clang immediately
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: work/toolchain
+          key: lunaris-clang-r416183b-${{ env.TOOLCHAIN_COMMIT }}
+
       - name: Restore bounded compiler cache
-        uses: actions/cache@v4
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: work/ccache
-          key: lunaris-ksunext-thin-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-${{ github.run_id }}
+          key: lunaris-ksunext-thin-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             lunaris-ksunext-thin-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-
 
@@ -149,13 +166,21 @@ jobs:
           free -h
           df -h "$GITHUB_WORKSPACE"
 
-      - name: Configure and compile Meteoric with built-in Next
+      - name: Preflight Next and compile kernel
+        id: kernel-build
         run: |
           bash scripts/build_lunaris_kernel.sh \
             --source work/source --root-source work/KernelSU-Next \
             --toolchain work/toolchain --config inputs/meteoric-5.10.237.config \
             --abi-whitelist work/original/abi_symbollist.raw \
             --output-dir work/build
+
+      - name: Save bounded compiler cache after verified inputs
+        if: always() && steps.ccache.outputs.cache-hit != 'true' && hashFiles('work/build/cache-trusted.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: work/ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
       - name: Verify original exported-symbol ABI
         run: |
@@ -180,7 +205,8 @@ jobs:
             work/build/used.config work/build/config.diff work/build/config-drift.json \
             work/build/kernelrelease.txt work/build/abi_symbollist.raw work/abi-report.json dist/
           cp work/original/abi-baseline.json dist/original-abi-baseline.json
-          cp work/build/build.log dist/
+          cp work/build/build.log work/build/preflight.log work/build/preflight-passed.txt \
+            work/build/build-state.json dist/
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
           def revision(directory):
@@ -231,10 +257,15 @@ jobs:
           path: |
             work/runner-storage.log
             work/runner-docker-prune.log
+            work/toolchain-version.txt
             work/original/metadata.json
             work/original/abi-baseline.json
             work/original/abi_symbollist.raw
             work/build/build.log
+            work/build/preflight.log
+            work/build/preflight-passed.txt
+            work/build/build-state.json
+            work/build/cache-trusted.json
             work/build/.config
             work/build/config.diff
             work/build/config-drift.json

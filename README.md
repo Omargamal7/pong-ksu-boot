@@ -27,6 +27,17 @@ No SUSFS patches are added. Thin LTO and runner disk cleanup address resource
 failures in the earlier workflow. The prior recipe is a reconstruction baseline;
 it is not proof of an exact reproduction of the shipped Meteoric source.
 
+Before compiling the full kernel, the build validates configuration transitions,
+prepares generated headers and compiles the Next driver objects. This catches
+source/API problems before spending time on the rest of the kernel.
+
+The shipped kernel's embedded configuration is incomplete: its binary already
+contains the SSBS CPU-erratum workaround and traditional `/proc/pid/mem` selector
+that are absent from its saved configuration. The validator accepts only the
+specific transitions supported by that original-binary evidence, removal of
+the observed disabled options, and Next/thin-LTO settings. Other drift still
+fails. It never disables the original CPU workaround to make the check pass.
+
 Before packaging, the workflow extracts the original kernel's exported-symbol
 CRCs and checks every original export against the rebuilt kernel's
 `Module.symvers`. Missing exports, changed CRCs, incomplete extraction, unexpected
