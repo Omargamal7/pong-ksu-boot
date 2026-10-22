@@ -2,9 +2,9 @@
   "name": "Lunaris KernelSU Next cloud build",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
   "hostRequirements": {
-    "cpus": 16,
+    "cpus": 8,
     "memory": "32gb",
-    "storage": "128gb"
+    "storage": "64gb"
   },
   "postCreateCommand": "bash scripts/build_lunaris_cloud.sh --background",
   "remoteUser": "vscode"
