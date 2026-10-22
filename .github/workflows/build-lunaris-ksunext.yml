@@ -249,12 +249,30 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Preserve raw compiled kernel as unverified diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          if test -s work/build/arch/arm64/boot/Image; then
+            mkdir -p work/diagnostics
+            cp work/build/arch/arm64/boot/Image work/diagnostics/unverified-Image
+            (cd work/diagnostics && sha256sum unverified-Image > unverified-Image.sha256)
+            printf '%s\n' \
+              'UNVERIFIED raw compiled kernel, preserved for investigation only.' \
+              'Compilation does not establish ABI compatibility or device bootability.' \
+              'This file is not a boot image or a verified test candidate. Do not flash it.' \
+              > work/diagnostics/UNVERIFIED.txt
+          fi
+
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lunaris-ksunext-diagnostics-${{ github.run_attempt }}
           path: |
+            work/diagnostics/unverified-Image
+            work/diagnostics/unverified-Image.sha256
+            work/diagnostics/UNVERIFIED.txt
             work/runner-storage.log
             work/runner-docker-prune.log
             work/toolchain-version.txt

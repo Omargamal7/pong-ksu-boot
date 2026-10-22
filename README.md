@@ -4,6 +4,13 @@ Cloud-only boot-image preparation for Nothing Phone (2), codename `Pong`.
 
 ## Installed Lunaris: replace built-in KernelSU with KernelSU Next
 
+**Source compatibility investigation is in progress.** The initial cloud build
+compiled successfully with enough disk space, but its reconstructed ACK baseline
+failed the original kernel's ABI check. No boot candidate was published. Run
+**Actions → Diagnose Meteoric source ABI fingerprints** to check source and
+configuration candidates with three small object builds before another full
+kernel build. Passing this probe still requires the complete ABI comparison.
+
 Run **Actions → Build Lunaris KernelSU Next → Run workflow**. The workflow builds
 on a GitHub-hosted Ubuntu runner. Nothing runs on the phone, and no workflow
 flashes a partition.
@@ -37,6 +44,13 @@ that are absent from its saved configuration. The validator accepts only the
 specific transitions supported by that original-binary evidence, removal of
 the observed disabled options, and Next/thin-LTO settings. Other drift still
 fails. It never disables the original CPU workaround to make the check pass.
+
+Meteoric's [pinned source](https://github.com/Pong-Development/kernel_nothing_sm8475_old/blob/7cccdf9b9c80932d8402e6fe1d51e56fff7fbdb2/kernel/Makefile) explains the mismatch: `kernel/Makefile` embeds
+`arch/arm64/configs/stock_defconfig` instead of the active build configuration.
+That file's hash exactly matches the uploaded image's saved config. The
+historical [Lunaris device recipe from December 7, 2025](https://github.com/Pong-Development/device_nothing_Pong/blob/7a4ab944183da07a5547f4f8a3041f7ee418a188/BoardConfig.mk) instead selects
+`vendor/meteoric_defconfig`. The diagnostic workflow checks this actual recipe
+and the saved config separately using the original Android Clang 20 build.
 
 Before packaging, the workflow extracts the original kernel's exported-symbol
 CRCs and checks every original export against the rebuilt kernel's
