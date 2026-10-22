@@ -142,10 +142,10 @@ grep -Fq -- '-- KernelSU-Next version: 33355' "$OUTPUT_DIR/build.log" || fail 'w
 grep -Fq -- '-- KernelSU-Next tag: v3.4.2' "$OUTPUT_DIR/build.log" || fail 'wrong or missing Next version tag'
 cp "$OUTPUT_DIR/arch/arm64/boot/Image" "$OUTPUT_DIR/Image"
 cp "$OUTPUT_DIR/.config" "$OUTPUT_DIR/used.config"
-if [ ! -s "$OUTPUT_DIR/Module.symvers" ]; then
-  cp "$OUTPUT_DIR/vmlinux.symvers" "$OUTPUT_DIR/Module.symvers"
-fi
-test -s "$OUTPUT_DIR/Module.symvers"
+# Image-only builds refresh vmlinux.symvers. Never reuse the copied symvers
+# from a previous persistent build when checking the current Image's ABI.
+test -s "$OUTPUT_DIR/vmlinux.symvers" || fail 'current vmlinux.symvers is missing'
+cp "$OUTPUT_DIR/vmlinux.symvers" "$OUTPUT_DIR/Module.symvers"
 printf '%s\n' "$release" > "$OUTPUT_DIR/kernelrelease.txt"
 sha256sum "$OUTPUT_DIR/Image" "$OUTPUT_DIR/used.config"
 ccache --show-stats || true
