@@ -54,9 +54,13 @@ jobs:
           }
 
       - name: Install build dependencies
+        timeout-minutes: 12
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o DPkg::Lock::Timeout=120 -o Acquire::Retries=1 \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
             bc binutils-aarch64-linux-gnu bison build-essential ccache cpio \
             dwarves flex gcc-aarch64-linux-gnu git libelf-dev libssl-dev lz4 \
             python3 python3-pip python3-venv rsync xz-utils

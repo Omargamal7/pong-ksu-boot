@@ -45,8 +45,11 @@ check_disk() {
 if [ -d "$WORK/source/.git" ]; then check_disk 35; else check_disk 45; fi
 SUDO=()
 if [ "$(id -u)" != 0 ]; then SUDO=(sudo); fi
-"${SUDO[@]}" apt-get update
-"${SUDO[@]}" apt-get install -y --no-install-recommends \
+timeout 10m "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get \
+  -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+timeout 10m "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get \
+  -o DPkg::Lock::Timeout=120 -o Acquire::Retries=1 \
+  -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
   bc binutils-aarch64-linux-gnu bison build-essential ccache cpio curl \
   dwarves flex gcc-aarch64-linux-gnu gh git libelf-dev libssl-dev lz4 \
   python3 python3-pip python3-venv rsync xz-utils
