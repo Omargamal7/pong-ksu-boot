@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Accept only audited original-to-built Lunaris configuration transitions.
+"""Compare the resolved Meteoric ROM baseline with its Next-only rebuild.
 
-The original Image contains mitigations/legacy behavior omitted from its
-embedded configuration. These exact exceptions describe the inspected binary;
-they do not make an absent option equivalent to a disabled option in general.
+--original must be generated from the pinned vendor/meteoric_defconfig using
+its original compiler before integrating Next. The Image's deliberately
+unrelated embedded stock_defconfig is input provenance, never the baseline.
 """
 
 from __future__ import annotations
@@ -16,83 +16,59 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
-
-# Every entry is directional: changing either endpoint requires a new review.
+PROFILE = "lunaris-pong-meteoric-7ccc-clang20"
 APPROVED_TRANSITIONS: dict[str, tuple[str | None, str | None]] = {
-    "CONFIG_CPU_MITIGATIONS": (None, "y"),
-    "CONFIG_ARM64_ERRATUM_3194386": (None, "y"),
-    "CONFIG_PROC_MEM_ALWAYS_FORCE": (None, "y"),
-    "CONFIG_MEMFD_ASHMEM_SHIM": (None, "n"),
-    "CONFIG_PROC_MEM_FORCE_PTRACE": (None, "n"),
-    "CONFIG_PROC_MEM_NO_FORCE": (None, "n"),
-    "CONFIG_ARM_SDE_INTERFACE": ("n", None),
-    "CONFIG_MFD_TI_AM335X_TSCADC": ("n", None),
-    "CONFIG_MMC_SDHCI_AM654": ("n", None),
-    "CONFIG_MMC_SDHCI_OMAP": ("n", None),
-    "CONFIG_NET_CLS_RSVP": ("n", None),
-    "CONFIG_NET_CLS_RSVP6": ("n", None),
-    "CONFIG_NET_SCH_CBQ": ("n", None),
-    "CONFIG_NET_SCH_DSMARK": ("n", None),
     "CONFIG_KSU": (None, "y"),
     "CONFIG_KSU_DEBUG": (None, "n"),
     "CONFIG_KSU_DISABLE_MANAGER": (None, "n"),
     "CONFIG_KSU_DISABLE_POLICY": (None, "n"),
-    "CONFIG_LTO_CLANG_FULL": ("y", "n"),
-    "CONFIG_LTO_CLANG_THIN": ("n", "y"),
 }
-
-REVIEW_NOTES = {
-    "baseline": (
-        "The uploaded 5.10.237-Meteoric Image's embedded configuration is incomplete "
-        "relative to its binary. Exceptions are limited to the exact reviewed transitions."
-    ),
-    "CONFIG_CPU_MITIGATIONS": (
-        "Pinned arch/Kconfig defines this hidden arm64 option as def_bool y."
-    ),
-    "CONFIG_ARM64_ERRATUM_3194386": (
-        "Original binary kallsyms contains erratum_spec_ssbs_list, "
-        "ssbs_emulation_handler and ssbs_emulation_hook. Keep the existing SSBS workaround enabled."
-    ),
-    "CONFIG_PROC_MEM_ALWAYS_FORCE": (
-        "Original proc_mem_force_override at Image offset 0x19ead7c stores enum 0, "
-        "PROC_MEM_FORCE_ALWAYS: retain traditional /proc/pid/mem behavior."
-    ),
-    "disabled_options": (
-        "Only the listed new disabled options and removed disabled options are accepted; "
-        "missing and n are not normalized globally."
-    ),
-    "root_and_lto": (
-        "Build exactly one KernelSU Next core into the Image, keep manager/policy support, "
-        "disable debug mode, and switch full LTO to thin LTO for cloud-runner capacity."
-    ),
-    "abi": (
-        "Configuration review does not establish vendor-module compatibility. "
-        "The independent full original exported-symbol ABI comparison remains mandatory."
-    ),
+REQUIRED_BASELINE = {
+    "CONFIG_SMP": "y",
+    "CONFIG_PREEMPT": "y",
+    "CONFIG_MODULES": "y",
+    "CONFIG_MODULE_UNLOAD": "y",
+    "CONFIG_MODVERSIONS": "y",
+    "CONFIG_KPROBES": "y",
+    "CONFIG_EXT4_FS": "y",
+    "CONFIG_KASAN": "y",
+    "CONFIG_KASAN_HW_TAGS": "y",
+    "CONFIG_SHADOW_CALL_STACK": "y",
+    "CONFIG_LTO_NONE": "y",
+    "CONFIG_LOCALVERSION": '"-Meteoric"',
+    "CONFIG_LOCALVERSION_AUTO": "n",
 }
-
 REQUIRED_BUILT = {
-    "CONFIG_CPU_MITIGATIONS": "y",
-    "CONFIG_ARM64_ERRATUM_3194386": "y",
-    "CONFIG_PROC_MEM_ALWAYS_FORCE": "y",
-    "CONFIG_MEMFD_ASHMEM_SHIM": "n",
-    "CONFIG_PROC_MEM_FORCE_PTRACE": "n",
-    "CONFIG_PROC_MEM_NO_FORCE": "n",
+    **REQUIRED_BASELINE,
     "CONFIG_KSU": "y",
     "CONFIG_KSU_DEBUG": "n",
     "CONFIG_KSU_DISABLE_MANAGER": "n",
     "CONFIG_KSU_DISABLE_POLICY": "n",
-    "CONFIG_LTO_CLANG_FULL": "n",
-    "CONFIG_LTO_CLANG_THIN": "y",
-    "CONFIG_CFI_CLANG": "y",
-    "CONFIG_CFI_CLANG_SHADOW": "y",
-    "CONFIG_SMP": "y",
-    "CONFIG_PREEMPT": "y",
-    "CONFIG_MODULE_UNLOAD": "y",
-    "CONFIG_MODVERSIONS": "y",
-    "CONFIG_TRIM_UNUSED_KSYMS": "y",
-    "CONFIG_KPROBES": "y",
-    "CONFIG_EXT4_FS": "y",
+}
+FORBIDDEN_ENABLED = {
+    "CONFIG_CFI_CLANG", "CONFIG_CFI_CLANG_SHADOW", "CONFIG_CFI_PERMISSIVE",
+    "CONFIG_LTO", "CONFIG_LTO_CLANG", "CONFIG_LTO_CLANG_FULL", "CONFIG_LTO_CLANG_THIN",
+}
+REVIEW_NOTES = {
+    "baseline": (
+        "Resolve pinned Pong 7cccdf9b vendor/meteoric_defconfig with original Android Clang 20 "
+        "before Next integration. This source deliberately embeds unrelated stock_defconfig; "
+        "the uploaded config is provenance only."
+    ),
+    "binary_evidence": (
+        "Original kallsyms contains KASAN HW-tag helpers and scs_alloc/scs_prepare; "
+        "__cfi_check, __cfi_slowpath and cfi_shadow are absent. Preserve KASAN HW tags, "
+        "shadow call stack and the actual non-CFI/non-LTO profile."
+    ),
+    "root_only": (
+        "Only four exact absent-to-Next transitions are allowed. Preserve all effective baseline "
+        "mitigations, proc-mem behavior, disabled options, local version and other settings. "
+        "Missing and disabled are never normalized globally."
+    ),
+    "abi": (
+        "This config gate cannot establish vendor-module compatibility. The independent "
+        "full comparison against all 14,523 original exported symbols remains mandatory."
+    ),
 }
 
 
@@ -127,47 +103,66 @@ def validate_configs(original: Mapping[str, str], built: Mapping[str, str]) -> d
         key for key, change in changes.items()
         if APPROVED_TRANSITIONS.get(key) != (change["original"], change["built"])
     ]
+    baseline_failures = {
+        key: {"expected": expected, "original": original.get(key)}
+        for key, expected in REQUIRED_BASELINE.items()
+        if original.get(key) != expected
+    }
     required_failures = {
         key: {"expected": expected, "built": built.get(key)}
         for key, expected in REQUIRED_BUILT.items()
         if built.get(key) != expected
     }
+    # Kconfig can omit known disabled features. Their spelling is still compared
+    # above; this is a feature assertion, not n/None normalization.
+    forbidden_original = sorted(key for key in FORBIDDEN_ENABLED if original.get(key) in ("y", "m"))
+    forbidden_built = sorted(key for key in FORBIDDEN_ENABLED if built.get(key) in ("y", "m"))
+    baseline_root_options = sorted(key for key in original if key.startswith("CONFIG_KSU"))
+    valid = not any((unexpected, baseline_failures, required_failures, forbidden_original, forbidden_built, baseline_root_options))
     return {
-        "schema_version": 1,
-        "valid": not unexpected and not required_failures,
+        "schema_version": 2,
+        "profile": PROFILE,
+        "valid": valid,
+        "embedded_config_used_as_baseline": False,
         "changes": changes,
         "unexpected": unexpected,
+        "baseline_failures": baseline_failures,
         "required_failures": required_failures,
+        "forbidden_original_enabled": forbidden_original,
+        "forbidden_built_enabled": forbidden_built,
+        "baseline_root_options": baseline_root_options,
         "review_notes": REVIEW_NOTES,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--original", required=True, type=Path)
+    parser.add_argument("--original", required=True, type=Path, help="resolved effective Meteoric baseline.config")
     parser.add_argument("--built", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
     args = parser.parse_args()
-    report = {"schema_version": 1, "valid": False}
+    report = {"schema_version": 2, "profile": PROFILE, "valid": False}
     try:
         original_bytes, built_bytes = args.original.read_bytes(), args.built.read_bytes()
         report = validate_configs(
             parse_config(original_bytes.decode("utf-8")),
             parse_config(built_bytes.decode("utf-8")),
         )
-        report["original_config_sha256"] = hashlib.sha256(original_bytes).hexdigest()
+        report["baseline_config_sha256"] = hashlib.sha256(original_bytes).hexdigest()
         report["built_config_sha256"] = hashlib.sha256(built_bytes).hexdigest()
     except (OSError, UnicodeError, ValueError) as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     if not report["valid"]:
-        details = report.get("error") or ", ".join(
-            sorted(set(report.get("unexpected", [])) | set(report.get("required_failures", {})))
-        )
-        print(f"FAIL: unreviewed/invalid Lunaris configuration: {details}; see {args.report}", file=sys.stderr)
+        details = report.get("error") or ", ".join(sorted(
+            set(report.get("unexpected", [])) | set(report.get("baseline_failures", {})) |
+            set(report.get("required_failures", {})) | set(report.get("forbidden_original_enabled", [])) |
+            set(report.get("forbidden_built_enabled", [])) | set(report.get("baseline_root_options", []))
+        ))
+        print(f"FAIL: unreviewed/invalid effective Meteoric configuration: {details}; see {args.report}", file=sys.stderr)
         return 1
-    print(f"Configuration verified: {len(report['changes'])} exact reviewed transitions")
+    print(f"Configuration verified: {len(report['changes'])} exact Next-only transitions; original non-LTO profile preserved")
     return 0
 
 

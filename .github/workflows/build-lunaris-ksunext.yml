@@ -15,9 +15,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
-      COMMON_COMMIT: 744d5c916fbbd6fb15f92c69c32de440d7345c6f
+      SOURCE_REPO: Pong-Development/kernel_nothing_sm8475_old
+      COMMON_COMMIT: 7cccdf9b9c80932d8402e6fe1d51e56fff7fbdb2
       NEXT_COMMIT: 4c706b5938665866ebe16944a481a7b91e3396af
-      TOOLCHAIN_COMMIT: 54220fd601050b350b2af7adc913089ebf0e7aed
+      TOOLCHAIN_COMMIT: 2d4dcbff7cb42f360f368bacf51cfe711fd1cb0f
+      BUILD_INFO_SHA256: 56cfce8294ee8bff7150f1bb666ce84986d8e51931df5889a29ba89cf3a0db0f
+      BUILD_PROFILE: meteoric-r547379-lto-none-v1
       BOOT_TOOLS_COMMIT: d2bb0af5ba6d3198a3e99529c97eda1be0b5a093
       ABI_EXTRACTOR_COMMIT: 2d094bc9c220b6b50f8215cbc3c9e581210ce1a6
       BOOT_SHA256: f86ca8c2a1f731a921813cecf0de1d693ed795f684cfb10cf1140bee4781cc7d
@@ -98,7 +101,7 @@ jobs:
           set -euo pipefail
           mkdir -p work/source work/mkbootimg
           git -C work/source init -q
-          git -C work/source remote add origin https://android.googlesource.com/kernel/common
+          git -C work/source remote add origin "https://github.com/$SOURCE_REPO.git"
           git -C work/source fetch --depth=1 --no-tags origin "$COMMON_COMMIT"
           git -C work/source checkout -q --detach FETCH_HEAD
           test "$(git -C work/source rev-parse HEAD)" = "$COMMON_COMMIT"
@@ -116,43 +119,63 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: work/toolchain
-          key: lunaris-clang-r416183b-${{ env.TOOLCHAIN_COMMIT }}
+          key: lunaris-clang-r547379-${{ env.TOOLCHAIN_COMMIT }}
 
-      - name: Download pinned Android Clang
+      - name: Download exact original Clang or fetch sparse official prebuilt
         if: steps.clang-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           mkdir -p work/toolchain
-          curl --fail --location --retry 4 \
-            "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b/archive/$TOOLCHAIN_COMMIT.tar.gz" \
-            --output work/clang.tar.gz
-          tar -xzf work/clang.tar.gz -C work/toolchain --strip-components=1
-          rm work/clang.tar.gz
+          archive="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$TOOLCHAIN_COMMIT/clang-r547379.tar.gz"
+          if curl --fail --location --retry 1 --retry-delay 3 --connect-timeout 20 --max-time 180 \
+            "$archive" --output work/clang.tar.gz && tar -xzf work/clang.tar.gz -C work/toolchain; then
+            echo 'official scoped archive' > work/toolchain-download-method.txt
+          else
+            echo 'Scoped archive failed; fetching the same pinned official prebuilt through sparse Git.'
+            rm -rf work/toolchain
+            mkdir -p work/toolchain work/clang-prebuilts
+            git -C work/clang-prebuilts init -q
+            git -C work/clang-prebuilts remote add origin https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
+            git -C work/clang-prebuilts config remote.origin.promisor true
+            git -C work/clang-prebuilts config remote.origin.partialclonefilter blob:none
+            git -c protocol.version=2 -C work/clang-prebuilts fetch --depth=1 --filter=blob:none --no-tags origin "$TOOLCHAIN_COMMIT"
+            git -C work/clang-prebuilts sparse-checkout init --cone
+            git -C work/clang-prebuilts sparse-checkout set clang-r547379
+            git -c protocol.version=2 -C work/clang-prebuilts checkout -q --detach FETCH_HEAD
+            test "$(git -C work/clang-prebuilts rev-parse HEAD)" = "$TOOLCHAIN_COMMIT"
+            cp -a work/clang-prebuilts/clang-r547379/. work/toolchain/
+            rm -rf work/clang-prebuilts
+            echo 'official Git protocol v2, shallow filtered sparse checkout' > work/toolchain-download-method.txt
+          fi
+          rm -f work/clang.tar.gz
 
       - name: Verify pinned Android Clang
         id: verify-clang
         run: |
           set -euo pipefail
+          printf '%s  %s\n' "$BUILD_INFO_SHA256" work/toolchain/BUILD_INFO | sha256sum --check --strict
           test -x work/toolchain/bin/clang
           test -x work/toolchain/bin/ld.lld
-          work/toolchain/bin/clang --version | head -1 | tee work/toolchain-version.txt
-          grep -Fq 'clang version 12.0.5' work/toolchain-version.txt
+          work/toolchain/bin/clang --version | tee work/toolchain-version.txt
+          grep -Fq 'Android (13290119, +pgo, +bolt, +lto, +mlgo, based on r547379) clang version 20.0.0' work/toolchain-version.txt
+          grep -Fq 'b718bcaf8c198c82f3021447d943401e3ab5bd54' work/toolchain-version.txt
 
       - name: Save verified Android Clang immediately
         if: steps.clang-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: work/toolchain
-          key: lunaris-clang-r416183b-${{ env.TOOLCHAIN_COMMIT }}
+          key: lunaris-clang-r547379-${{ env.TOOLCHAIN_COMMIT }}
 
       - name: Restore bounded compiler cache
         id: ccache
         uses: actions/cache/restore@v4
         with:
           path: work/ccache
-          key: lunaris-ksunext-thin-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: lunaris-${{ env.BUILD_PROFILE }}-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-${{ env.TOOLCHAIN_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            lunaris-ksunext-thin-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-
+            lunaris-${{ env.BUILD_PROFILE }}-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-${{ env.TOOLCHAIN_COMMIT }}-
 
       - name: Provision bounded swap
         run: |
@@ -202,8 +225,10 @@ jobs:
             --pattern KernelSU_Next_v3.4.2_33355-release.apk --dir dist
           printf '%s  %s\n' "$MANAGER_SHA256" dist/KernelSU_Next_v3.4.2_33355-release.apk | sha256sum --check --strict
           cp work/build/Image work/build/Module.symvers work/build/System.map \
-            work/build/used.config work/build/config.diff work/build/config-drift.json \
+            work/build/used.config work/build/baseline.config work/build/baseline-provenance.json \
+            work/build/config.diff work/build/config-drift.json \
             work/build/kernelrelease.txt work/build/abi_symbollist.raw work/abi-report.json dist/
+          cp inputs/meteoric-5.10.237.config dist/embedded-stock.config
           cp work/original/abi-baseline.json dist/original-abi-baseline.json
           cp work/build/build.log work/build/preflight.log work/build/preflight-passed.txt \
             work/build/build-state.json dist/
@@ -220,10 +245,17 @@ jobs:
               'kernel_release': pathlib.Path('work/build/kernelrelease.txt').read_text().strip(),
               'base_boot_sha256': digest('boot-current.img'),
               'kernel_source': revision('work/source'),
+              'kernel_repository': os.environ['SOURCE_REPO'],
+              'build_profile': os.environ['BUILD_PROFILE'],
+              'configuration_target': 'vendor/meteoric_defconfig',
+              'effective_baseline_config_sha256': digest('work/build/baseline.config'),
+              'embedded_stock_config_sha256': digest('inputs/meteoric-5.10.237.config'),
+              'lto': 'none',
               'root_source': revision('work/KernelSU-Next'),
               'root': 'KernelSU Next v3.4.2 / 33355, built in',
               'susfs': False,
               'toolchain_source': os.environ['TOOLCHAIN_COMMIT'],
+              'compiler_build_info_sha256': digest('work/toolchain/BUILD_INFO'),
               'compiler': subprocess.check_output(['work/toolchain/bin/clang', '--version'], text=True).splitlines()[0],
               'boot_tools_source': revision('work/mkbootimg'),
               'abi_extractor_source': os.environ['ABI_EXTRACTOR_COMMIT'],
@@ -276,6 +308,7 @@ jobs:
             work/runner-storage.log
             work/runner-docker-prune.log
             work/toolchain-version.txt
+            work/toolchain-download-method.txt
             work/original/metadata.json
             work/original/abi-baseline.json
             work/original/abi_symbollist.raw
@@ -285,6 +318,9 @@ jobs:
             work/build/build-state.json
             work/build/cache-trusted.json
             work/build/.config
+            work/build/baseline.config
+            work/build/baseline-provenance.json
+            work/build/embedded-stock.config
             work/build/config.diff
             work/build/config-drift.json
             work/build/kernelrelease.txt

@@ -39,15 +39,21 @@ fi
 [ "$(uname -m)" = x86_64 ] || fail 'this cloud build requires Linux x86_64'
 
 REPOSITORY=Omargamal7/pong-ksu-boot
-COMMON_COMMIT=744d5c916fbbd6fb15f92c69c32de440d7345c6f
+SOURCE_REPO=Pong-Development/kernel_nothing_sm8475_old
+COMMON_COMMIT=7cccdf9b9c80932d8402e6fe1d51e56fff7fbdb2
 NEXT_COMMIT=4c706b5938665866ebe16944a481a7b91e3396af
-TOOLCHAIN_COMMIT=54220fd601050b350b2af7adc913089ebf0e7aed
+TOOLCHAIN_COMMIT=2d4dcbff7cb42f360f368bacf51cfe711fd1cb0f
+BUILD_INFO_SHA256=56cfce8294ee8bff7150f1bb666ce84986d8e51931df5889a29ba89cf3a0db0f
+BUILD_PROFILE=meteoric-r547379-lto-none-v1
 BOOT_TOOLS_COMMIT=d2bb0af5ba6d3198a3e99529c97eda1be0b5a093
 ABI_EXTRACTOR_COMMIT=2d094bc9c220b6b50f8215cbc3c9e581210ce1a6
 BOOT_SHA256=f86ca8c2a1f731a921813cecf0de1d693ed795f684cfb10cf1140bee4781cc7d
 MANAGER_SHA256=774a5511f7034a4930e881114e202319cbdc34c5aaaa5c7c6b6d2902364e4c58
-export COMMON_COMMIT NEXT_COMMIT TOOLCHAIN_COMMIT BOOT_TOOLS_COMMIT ABI_EXTRACTOR_COMMIT
-WORK="$REPO_DIR/work/cloud"
+export SOURCE_REPO COMMON_COMMIT NEXT_COMMIT TOOLCHAIN_COMMIT BOOT_TOOLS_COMMIT ABI_EXTRACTOR_COMMIT BUILD_PROFILE BUILD_INFO_SHA256
+# Keep incompatible earlier ACK/Clang12 sources, compiler and objects separate.
+# The top-level work/cloud lock, PID and session log remain stable for callers.
+WORK="$REPO_DIR/work/cloud/$BUILD_PROFILE"
+mkdir -p "$WORK"
 DIST="$WORK/dist"
 
 check_disk() {
@@ -106,7 +112,7 @@ fetch_pinned() {
   fi
   [ "$(git -C "$directory" rev-parse HEAD)" = "$revision" ] || fail "unexpected revision: $directory"
 }
-fetch_pinned "$WORK/source" https://android.googlesource.com/kernel/common "$COMMON_COMMIT"
+fetch_pinned "$WORK/source" "https://github.com/$SOURCE_REPO.git" "$COMMON_COMMIT"
 fetch_pinned "$WORK/mkbootimg" https://android.googlesource.com/platform/system/tools/mkbootimg "$BOOT_TOOLS_COMMIT"
 if [ ! -d "$WORK/KernelSU-Next/.git" ]; then
   git clone --filter=blob:none --single-branch --branch v3.4.2 \
@@ -135,21 +141,70 @@ elif link.exists():
 subprocess.run(['git', '-C', str(source), 'restore', '--source=HEAD', '--', 'drivers/Makefile', 'drivers/Kconfig'], check=True)
 scmversion = source / '.scmversion'
 if scmversion.exists():
-    if scmversion.read_text() != '-Meteoric\n':
+    if scmversion.read_text() not in ('', '-Meteoric\n'):
         raise SystemExit('refusing to remove an unexpected .scmversion')
     scmversion.unlink()
 PY
 
-if [ ! -x "$WORK/toolchain/bin/clang" ]; then
-  mkdir -p "$WORK/toolchain"
-  curl --fail --location --retry 4 \
-    "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b/archive/$TOOLCHAIN_COMMIT.tar.gz" \
-    --output "$WORK/clang.tar.gz"
-  tar -xzf "$WORK/clang.tar.gz" -C "$WORK/toolchain" --strip-components=1
-  rm "$WORK/clang.tar.gz"
+verify_compiler() {
+  local directory="$1" version linker_version tool
+  [ -f "$directory/BUILD_INFO" ] || return 1
+  printf '%s  %s\n' "$BUILD_INFO_SHA256" "$directory/BUILD_INFO" | sha256sum --check --status || return 1
+  for tool in clang ld.lld llvm-nm llvm-ar llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
+    [ -x "$directory/bin/$tool" ] || return 1
+  done
+  version="$("$directory/bin/clang" --version)" || return 1
+  [[ "$version" == *'Android (13290119, +pgo, +bolt, +lto, +mlgo, based on r547379) clang version 20.0.0'* ]] || return 1
+  [[ "$version" == *'b718bcaf8c198c82f3021447d943401e3ab5bd54'* ]] || return 1
+  linker_version="$("$directory/bin/ld.lld" --version)" || return 1
+  [[ "$linker_version" == *'20.0.0'* ]] || return 1
+  "$directory/bin/llvm-nm" --version >/dev/null || return 1
+}
+if ! verify_compiler "$WORK/toolchain"; then
+  printf '%s\n' 'No complete verified compiler is cached; downloading into an isolated staging directory.'
+  STAGED_TOOLCHAIN="$WORK/toolchain.staging"
+  # These paths are owned by this build profile, never a shared SDK directory.
+  rm -rf "$STAGED_TOOLCHAIN"
+  mkdir -p "$STAGED_TOOLCHAIN"
+  archive="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$TOOLCHAIN_COMMIT/clang-r547379.tar.gz"
+  if curl --fail --location --retry 1 --retry-delay 3 --connect-timeout 20 --max-time 180 \
+    "$archive" --output "$WORK/clang.tar.gz" && tar -xzf "$WORK/clang.tar.gz" -C "$STAGED_TOOLCHAIN"; then
+    echo 'official scoped archive' > "$WORK/toolchain-download-method.txt"
+  else
+    printf '%s\n' 'Scoped archive failed; fetching the same pinned official prebuilt through sparse Git.'
+    rm -rf "$STAGED_TOOLCHAIN"
+    mkdir -p "$STAGED_TOOLCHAIN" "$WORK/clang-prebuilts"
+    if [ ! -d "$WORK/clang-prebuilts/.git" ]; then
+      git -C "$WORK/clang-prebuilts" init -q
+      git -C "$WORK/clang-prebuilts" remote add origin https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
+    fi
+    [ "$(git -C "$WORK/clang-prebuilts" remote get-url origin)" = https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 ] || fail 'unexpected compiler prebuilt origin'
+    git -C "$WORK/clang-prebuilts" config remote.origin.promisor true
+    git -C "$WORK/clang-prebuilts" config remote.origin.partialclonefilter blob:none
+    git -c protocol.version=2 -C "$WORK/clang-prebuilts" fetch --depth=1 --filter=blob:none --no-tags origin "$TOOLCHAIN_COMMIT"
+    git -C "$WORK/clang-prebuilts" sparse-checkout init --cone
+    git -C "$WORK/clang-prebuilts" sparse-checkout set clang-r547379
+    git -c protocol.version=2 -C "$WORK/clang-prebuilts" checkout -q --detach FETCH_HEAD
+    [ "$(git -C "$WORK/clang-prebuilts" rev-parse HEAD)" = "$TOOLCHAIN_COMMIT" ] || fail 'unexpected compiler prebuilt revision'
+    cp -a "$WORK/clang-prebuilts/clang-r547379/." "$STAGED_TOOLCHAIN/"
+    rm -rf "$WORK/clang-prebuilts"
+    echo 'official Git protocol v2, shallow filtered sparse checkout' > "$WORK/toolchain-download-method.txt"
+  fi
+  verify_compiler "$STAGED_TOOLCHAIN" || fail 'downloaded compiler failed completeness or pinned identity checks'
+  rm -rf "$WORK/toolchain.incomplete"
+  if [ -e "$WORK/toolchain" ]; then mv "$WORK/toolchain" "$WORK/toolchain.incomplete"; fi
+  mv "$STAGED_TOOLCHAIN" "$WORK/toolchain"
+  rm -rf "$WORK/toolchain.incomplete"
+  rm -f "$WORK/clang.tar.gz"
 fi
+printf '%s  %s\n' "$BUILD_INFO_SHA256" "$WORK/toolchain/BUILD_INFO" | sha256sum --check --strict
+test -x "$WORK/toolchain/bin/clang"
+test -x "$WORK/toolchain/bin/ld.lld"
+"$WORK/toolchain/bin/clang" --version | tee "$WORK/toolchain-version.txt"
+grep -Fq 'Android (13290119, +pgo, +bolt, +lto, +mlgo, based on r547379) clang version 20.0.0' "$WORK/toolchain-version.txt" || fail 'unexpected compiler build'
+grep -Fq 'b718bcaf8c198c82f3021447d943401e3ab5bd54' "$WORK/toolchain-version.txt" || fail 'unexpected LLVM source revision'
 # A Codespace is persistent: do not delete its SDKs, caches or unrelated files.
-export CCACHE_DIR="$WORK/ccache"
+export CCACHE_DIR="$WORK/ccache-$COMMON_COMMIT-$NEXT_COMMIT-$TOOLCHAIN_COMMIT"
 export JOBS="${JOBS:-$(nproc)}"
 bash scripts/build_lunaris_kernel.sh \
   --source "$WORK/source" --root-source "$WORK/KernelSU-Next" \
@@ -172,9 +227,11 @@ if [ ! -f "$MANAGER" ]; then
     --pattern KernelSU_Next_v3.4.2_33355-release.apk --dir "$DIST"
 fi
 printf '%s  %s\n' "$MANAGER_SHA256" "$MANAGER" | sha256sum --check --strict
-cp "$WORK/build/Image" "$WORK/build/used.config" "$WORK/build/config.diff" "$WORK/build/config-drift.json" \
+cp "$WORK/build/Image" "$WORK/build/used.config" "$WORK/build/baseline.config" "$WORK/build/baseline-provenance.json" \
+  "$WORK/build/embedded-stock.config" "$WORK/build/config.diff" "$WORK/build/config-drift.json" \
   "$WORK/build/kernelrelease.txt" "$WORK/build/Module.symvers" "$WORK/build/System.map" \
-  "$WORK/build/abi_symbollist.raw" "$WORK/build/build.log" "$WORK/abi-report.json" "$DIST/"
+  "$WORK/build/abi_symbollist.raw" "$WORK/build/build.log" "$WORK/build/preflight.log" \
+  "$WORK/build/preflight-passed.txt" "$WORK/build/build-state.json" "$WORK/abi-report.json" "$DIST/"
 cp "$WORK/original/abi-baseline.json" "$DIST/original-abi-baseline.json"
 python3 - "$WORK" "$DIST" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
@@ -187,8 +244,13 @@ manifest = {
     'kernel_release': (work / 'build/kernelrelease.txt').read_text().strip(),
     'base_boot_sha256': digest(work / 'boot-current.img'),
     'kernel_source': revision(work / 'source'), 'root_source': revision(work / 'KernelSU-Next'),
+    'kernel_repository': os.environ['SOURCE_REPO'], 'build_profile': os.environ['BUILD_PROFILE'],
+    'configuration_target': 'vendor/meteoric_defconfig', 'lto': 'none',
+    'effective_baseline_config_sha256': digest(work / 'build/baseline.config'),
+    'embedded_stock_config_sha256': digest(work / 'build/embedded-stock.config'),
     'root': 'KernelSU Next v3.4.2 / 33355, built in', 'susfs': False,
     'toolchain_source': os.environ['TOOLCHAIN_COMMIT'],
+    'compiler_build_info_sha256': digest(work / 'toolchain/BUILD_INFO'),
     'compiler': subprocess.check_output([str(work / 'toolchain/bin/clang'), '--version'], text=True).splitlines()[0],
     'boot_tools_source': revision(work / 'mkbootimg'),
     'abi_extractor_source': os.environ['ABI_EXTRACTOR_COMMIT'],
@@ -203,7 +265,7 @@ manifest = {
     'manager/driver version and root allow/deny behavior before considering persistent use.\n'
     'This build does not flash or modify a phone.\n')
 PY
-(cd "$DIST" && sha256sum -- * > SHA256SUMS)
+python3 scripts/write_artifact_checksums.py --directory "$DIST"
 if [ "$PUBLISH" = true ]; then
   [ "$(gh api "repos/$REPOSITORY" --jq .visibility)" = private ] || fail 'expected a private artifact repository'
   RELEASE=lunaris-ksunext-v3.4.2-test-candidate

@@ -24,26 +24,22 @@ it already contains the older KernelSU. The verified input is:
 - Kernel `5.10.237-Meteoric`; saved config SHA-256
   `a8b21ecc239eb1cbb9a72ccca8c5fa98c9833c2b003472fc840e099ef26ab778`.
 
-The build reuses the Meteoric recipe/configuration and AOSP repacking approach
-from `Omargamal7/pong-nos41-kernel-build` commit
-`e56490538b35ec3095a401fc1c1aba975910e590`. It starts from clean ACK commit
-`744d5c916fbbd6fb15f92c69c32de440d7345c6f` and integrates exactly one root core:
-official **KernelSU Next v3.4.2**, commit
+The build uses clean Meteoric source from
+`Pong-Development/kernel_nothing_sm8475_old` commit
+`7cccdf9b9c80932d8402e6fe1d51e56fff7fbdb2` with
+`vendor/meteoric_defconfig`, the historical Lunaris device recipe. It uses the
+original Android Clang 20 `r547379` build 13290119, pinned to official prebuilt
+commit `2d4dcbff7cb42f360f368bacf51cfe711fd1cb0f`. It integrates exactly one root
+core: official **KernelSU Next v3.4.2**, commit
 `4c706b5938665866ebe16944a481a7b91e3396af`, built in with `CONFIG_KSU=y`.
-No SUSFS patches are added. Thin LTO and runner disk cleanup address resource
-failures in the earlier workflow. The prior recipe is a reconstruction baseline;
-it is not proof of an exact reproduction of the shipped Meteoric source.
+No SUSFS patches are added. Runner disk cleanup and bounded caches provide
+storage headroom; the actual recipe retains its original LTO setting of none.
+The earlier `pong-nos41-kernel-build` workflow supplies the repacking approach,
+while the uploaded kernel and historical Lunaris sources determine this profile.
 
 Before compiling the full kernel, the build validates configuration transitions,
 prepares generated headers and compiles the Next driver objects. This catches
 source/API problems before spending time on the rest of the kernel.
-
-The shipped kernel's embedded configuration is incomplete: its binary already
-contains the SSBS CPU-erratum workaround and traditional `/proc/pid/mem` selector
-that are absent from its saved configuration. The validator accepts only the
-specific transitions supported by that original-binary evidence, removal of
-the observed disabled options, and Next/thin-LTO settings. Other drift still
-fails. It never disables the original CPU workaround to make the check pass.
 
 Meteoric's [pinned source](https://github.com/Pong-Development/kernel_nothing_sm8475_old/blob/7cccdf9b9c80932d8402e6fe1d51e56fff7fbdb2/kernel/Makefile) explains the mismatch: `kernel/Makefile` embeds
 `arch/arm64/configs/stock_defconfig` instead of the active build configuration.
@@ -51,6 +47,12 @@ That file's hash exactly matches the uploaded image's saved config. The
 historical [Lunaris device recipe from December 7, 2025](https://github.com/Pong-Development/device_nothing_Pong/blob/7a4ab944183da07a5547f4f8a3041f7ee418a188/BoardConfig.mk) instead selects
 `vendor/meteoric_defconfig`. The diagnostic workflow checks this actual recipe
 and the saved config separately using the original Android Clang 20 build.
+
+The full build resolves that actual defconfig before integrating Next and saves
+it as `baseline.config`. The validator permits only the reviewed Next settings
+against that baseline. KASAN hardware tags and shadow call stacks are preserved;
+CFI remains disabled, matching the original binary. The embedded stock config
+is retained as input evidence and never used as the active build config.
 
 Before packaging, the workflow extracts the original kernel's exported-symbol
 CRCs and checks every original export against the rebuilt kernel's
