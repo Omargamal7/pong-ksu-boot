@@ -62,8 +62,19 @@ The output must fit the original partition.
 
 A passing run provides `boot-lunaris-ksunext-v3.4.2.img`, the matching official
 manager APK, SHA-256 checksums, build/configuration logs and provenance. Failure
-diagnostics are retained separately and do not provide a boot candidate. The
-repacked image is compact and has no copied AVB footer or OEM signature.
+diagnostics are retained separately and do not provide a boot candidate.
+
+The boot image keeps the original's AVB layout: it fills the 96 MiB partition
+and ends with an unsigned (`NONE`) hash footer for `boot` that reuses the
+original's salt, properties, rollback settings and release string. Only the
+payload size and digest change; `boot-lunaris-ksunext-v3.4.2.avb.json` records
+both footers. The footer is added with `avbtool.py` from AOSP `external/avb`
+commit `761178607206f4cb2af79ed9eec52d8cbd814adb` (SHA-256
+`e5a664a38db623da00f080219bc0ee60a640a9dc4a872803616fae4938ac749b`). The
+uploaded original's own footer digest does not match its payload; the
+`lunaris-boot-input` release describes that image as extracted from the phone. No
+OEM signature is added and the vbmeta partition is not changed, so its record
+for `boot`, if any, will not match this image either.
 
 **A passing build is a test candidate.** Static ABI checks cannot establish
 hardware compatibility. Keep the original `boot-current.img` available for
@@ -76,13 +87,17 @@ Validate the build definitions:
 ```sh
 python3 -m unittest discover -s tests -v
 bash -n scripts/build_lunaris_kernel.sh
+# AVB footer tests need the pinned avbtool.py:
+AVBTOOL=/path/to/avbtool.py python3 -m unittest tests.test_avb_footer -v
 ```
 
 ## Parallel Codespaces backup
 
 Create a Codespace for this repository using the **Lunaris KernelSU Next cloud
-build** configuration. Select a machine with **16 cores / 128 GB storage** so the
-persistent build has more disk headroom than the standard Actions runner:
+build** configuration. The configuration requires at least **8 cores / 32 GB RAM /
+64 GB storage**. Codespace creation has reported "no machine types are
+available" with both this and the earlier 16-core minimum; the cause is not
+identified. Whether 64 GB leaves the 45 GiB the script needs is also unconfirmed:
 
 https://github.com/codespaces/new?repo=1293663412&ref=master
 

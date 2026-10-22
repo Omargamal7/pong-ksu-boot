@@ -22,6 +22,8 @@ jobs:
       BUILD_INFO_SHA256: 56cfce8294ee8bff7150f1bb666ce84986d8e51931df5889a29ba89cf3a0db0f
       BUILD_PROFILE: meteoric-r547379-lto-none-v1
       BOOT_TOOLS_COMMIT: d2bb0af5ba6d3198a3e99529c97eda1be0b5a093
+      AVB_COMMIT: 761178607206f4cb2af79ed9eec52d8cbd814adb
+      AVBTOOL_SHA256: e5a664a38db623da00f080219bc0ee60a640a9dc4a872803616fae4938ac749b
       ABI_EXTRACTOR_COMMIT: 2d094bc9c220b6b50f8215cbc3c9e581210ce1a6
       BOOT_SHA256: f86ca8c2a1f731a921813cecf0de1d693ed795f684cfb10cf1140bee4781cc7d
       MANAGER_SHA256: 774a5511f7034a4930e881114e202319cbdc34c5aaaa5c7c6b6d2902364e4c58
@@ -113,6 +115,19 @@ jobs:
           git -C work/mkbootimg fetch --depth=1 --no-tags origin "$BOOT_TOOLS_COMMIT"
           git -C work/mkbootimg checkout -q --detach FETCH_HEAD
           test "$(git -C work/mkbootimg rev-parse HEAD)" = "$BOOT_TOOLS_COMMIT"
+          mkdir -p work/avb
+          git -C work/avb init -q
+          git -C work/avb remote add origin https://android.googlesource.com/platform/external/avb
+          git -C work/avb config remote.origin.promisor true
+          git -C work/avb config remote.origin.partialclonefilter blob:none
+          git -c protocol.version=2 -C work/avb fetch --depth=1 --filter=blob:none --no-tags origin "$AVB_COMMIT"
+          git -C work/avb sparse-checkout set --no-cone /avbtool.py
+          git -C work/avb checkout -q --detach FETCH_HEAD
+          test "$(git -C work/avb rev-parse HEAD)" = "$AVB_COMMIT"
+          printf '%s  %s\n' "$AVBTOOL_SHA256" work/avb/avbtool.py | sha256sum --check --strict
+
+      - name: Test AVB footer copying with pinned avbtool
+        run: AVBTOOL=work/avb/avbtool.py python3 -m unittest tests.test_avb_footer -v
 
       - name: Restore pinned Android Clang
         id: clang-cache
@@ -233,7 +248,13 @@ jobs:
         run: |
           python3 scripts/repack_lunaris_boot.py --base boot-current.img \
             --kernel work/build/Image --tools work/mkbootimg \
-            --output dist/boot-lunaris-ksunext-v3.4.2.img --partition-size 100663296
+            --output work/repack/boot-lunaris-ksunext-v3.4.2.img --partition-size 100663296
+
+      - name: Add AVB hash footer matching the original
+        run: |
+          python3 scripts/add_lunaris_avb_footer.py --base boot-current.img \
+            --image work/repack/boot-lunaris-ksunext-v3.4.2.img --avbtool work/avb/avbtool.py \
+            --output dist/boot-lunaris-ksunext-v3.4.2.img
 
       - name: Collect matching manager and provenance
         env:
@@ -249,6 +270,7 @@ jobs:
             work/build/kernelrelease.txt work/build/abi_symbollist.raw work/abi-report.json dist/
           cp inputs/meteoric-5.10.237.config dist/embedded-stock.config
           cp work/original/abi-baseline.json dist/original-abi-baseline.json
+          cp work/repack/boot-lunaris-ksunext-v3.4.2.metadata.json dist/repack-metadata.json
           cp work/build/build.log work/build/preflight.log work/build/preflight-passed.txt \
             work/build/build-state.json dist/
           python3 - <<'PY'
@@ -277,6 +299,8 @@ jobs:
               'compiler_build_info_sha256': digest('work/toolchain/BUILD_INFO'),
               'compiler': subprocess.check_output(['work/toolchain/bin/clang', '--version'], text=True).splitlines()[0],
               'boot_tools_source': revision('work/mkbootimg'),
+              'avbtool_source': revision('work/avb'),
+              'avb_footer': 'unsigned hash footer copying the original fields; vbmeta partition unchanged',
               'abi_extractor_source': os.environ['ABI_EXTRACTOR_COMMIT'],
               'abi_whitelist_sha256': digest('work/original/abi_symbollist.raw'),
               'workflow_commit': os.environ['GITHUB_SHA'],
