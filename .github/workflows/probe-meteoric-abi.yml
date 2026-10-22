@@ -121,7 +121,7 @@ jobs:
           set -euo pipefail
           mkdir -p work/toolchain
           archive="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$TOOLCHAIN_COMMIT/clang-r547379.tar.gz"
-          if curl --fail --location --retry 1 --retry-delay 3 --connect-timeout 20 --max-time 180 \
+          if curl --fail --location --retry 0 --connect-timeout 20 --max-time 420 --speed-time 30 --speed-limit 1024 \
             "$archive" --output work/clang.tar.gz && tar -xzf work/clang.tar.gz -C work/toolchain; then
             echo 'official scoped archive' > work/toolchain-download-method.txt
           else

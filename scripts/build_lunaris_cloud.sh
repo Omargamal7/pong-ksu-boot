@@ -160,6 +160,25 @@ verify_compiler() {
   [[ "$linker_version" == *'20.0.0'* ]] || return 1
   "$directory/bin/llvm-nm" --version >/dev/null || return 1
 }
+prune_compiler_variants() {
+  local directory="$1" tool
+  {
+    printf '%s\n' 'Before removing unused top-level compiler variants:'
+    du -sh "$directory"
+    df -h "$WORK"
+    # Official remote_toolchain_inputs uses the retained bin/lib/include/share
+    # closure. These four unrelated distribution variants are profile-owned.
+    rm -rf "$directory/musl" "$directory/runtimes_ndk_cxx" \
+      "$directory/android_libc++" "$directory/python3"
+    for tool in clang ld.lld llvm-nm llvm-ar llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
+      printf 'Checking %s after variant removal:\n' "$tool"
+      "$directory/bin/$tool" --version
+    done
+    printf '%s\n' 'After removing unused top-level compiler variants:'
+    du -sh "$directory"
+    df -h "$WORK"
+  } 2>&1 | tee -a "$WORK/toolchain-storage.log"
+}
 if ! verify_compiler "$WORK/toolchain"; then
   printf '%s\n' 'No complete verified compiler is cached; downloading into an isolated staging directory.'
   STAGED_TOOLCHAIN="$WORK/toolchain.staging"
@@ -167,7 +186,7 @@ if ! verify_compiler "$WORK/toolchain"; then
   rm -rf "$STAGED_TOOLCHAIN"
   mkdir -p "$STAGED_TOOLCHAIN"
   archive="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$TOOLCHAIN_COMMIT/clang-r547379.tar.gz"
-  if curl --fail --location --retry 1 --retry-delay 3 --connect-timeout 20 --max-time 180 \
+  if curl --fail --location --retry 0 --connect-timeout 20 --max-time 420 --speed-time 30 --speed-limit 1024 \
     "$archive" --output "$WORK/clang.tar.gz" && tar -xzf "$WORK/clang.tar.gz" -C "$STAGED_TOOLCHAIN"; then
     echo 'official scoped archive' > "$WORK/toolchain-download-method.txt"
   else
@@ -191,11 +210,16 @@ if ! verify_compiler "$WORK/toolchain"; then
     echo 'official Git protocol v2, shallow filtered sparse checkout' > "$WORK/toolchain-download-method.txt"
   fi
   verify_compiler "$STAGED_TOOLCHAIN" || fail 'downloaded compiler failed completeness or pinned identity checks'
+  prune_compiler_variants "$STAGED_TOOLCHAIN"
+  verify_compiler "$STAGED_TOOLCHAIN" || fail 'staged compiler failed verification after removing unused variants'
   rm -rf "$WORK/toolchain.incomplete"
   if [ -e "$WORK/toolchain" ]; then mv "$WORK/toolchain" "$WORK/toolchain.incomplete"; fi
   mv "$STAGED_TOOLCHAIN" "$WORK/toolchain"
   rm -rf "$WORK/toolchain.incomplete"
   rm -f "$WORK/clang.tar.gz"
+else
+  prune_compiler_variants "$WORK/toolchain"
+  verify_compiler "$WORK/toolchain" || fail 'cached compiler failed verification after removing unused variants'
 fi
 printf '%s  %s\n' "$BUILD_INFO_SHA256" "$WORK/toolchain/BUILD_INFO" | sha256sum --check --strict
 test -x "$WORK/toolchain/bin/clang"
@@ -231,7 +255,8 @@ cp "$WORK/build/Image" "$WORK/build/used.config" "$WORK/build/baseline.config" "
   "$WORK/build/embedded-stock.config" "$WORK/build/config.diff" "$WORK/build/config-drift.json" \
   "$WORK/build/kernelrelease.txt" "$WORK/build/Module.symvers" "$WORK/build/System.map" \
   "$WORK/build/abi_symbollist.raw" "$WORK/build/build.log" "$WORK/build/preflight.log" \
-  "$WORK/build/preflight-passed.txt" "$WORK/build/build-state.json" "$WORK/abi-report.json" "$DIST/"
+  "$WORK/build/preflight-passed.txt" "$WORK/build/build-state.json" "$WORK/abi-report.json" \
+  "$WORK/toolchain-storage.log" "$DIST/"
 cp "$WORK/original/abi-baseline.json" "$DIST/original-abi-baseline.json"
 python3 - "$WORK" "$DIST" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys

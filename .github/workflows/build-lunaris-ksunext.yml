@@ -128,7 +128,7 @@ jobs:
           set -euo pipefail
           mkdir -p work/toolchain
           archive="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$TOOLCHAIN_COMMIT/clang-r547379.tar.gz"
-          if curl --fail --location --retry 1 --retry-delay 3 --connect-timeout 20 --max-time 180 \
+          if curl --fail --location --retry 0 --connect-timeout 20 --max-time 420 --speed-time 30 --speed-limit 1024 \
             "$archive" --output work/clang.tar.gz && tar -xzf work/clang.tar.gz -C work/toolchain; then
             echo 'official scoped archive' > work/toolchain-download-method.txt
           else
@@ -167,6 +167,25 @@ jobs:
         with:
           path: work/toolchain
           key: lunaris-clang-r547379-${{ env.TOOLCHAIN_COMMIT }}
+
+      - name: Remove unused compiler distribution variants
+        run: |
+          set -euo pipefail
+          {
+            echo 'Before removing unused top-level compiler variants:'
+            du -sh work/toolchain
+            df -h "$GITHUB_WORKSPACE"
+            rm -rf work/toolchain/musl work/toolchain/runtimes_ndk_cxx \
+              work/toolchain/android_libc++ work/toolchain/python3
+            for tool in clang ld.lld llvm-nm llvm-ar llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
+              echo "Checking $tool after variant removal:"
+              "work/toolchain/bin/$tool" --version
+            done
+            printf '%s  %s\n' "$BUILD_INFO_SHA256" work/toolchain/BUILD_INFO | sha256sum --check --strict
+            echo 'After removing unused top-level compiler variants:'
+            du -sh work/toolchain
+            df -h "$GITHUB_WORKSPACE"
+          } 2>&1 | tee work/toolchain-storage.log
 
       - name: Restore bounded compiler cache
         id: ccache
@@ -309,6 +328,7 @@ jobs:
             work/runner-docker-prune.log
             work/toolchain-version.txt
             work/toolchain-download-method.txt
+            work/toolchain-storage.log
             work/original/metadata.json
             work/original/abi-baseline.json
             work/original/abi_symbollist.raw
