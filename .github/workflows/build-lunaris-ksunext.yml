@@ -1,0 +1,230 @@
+name: Build Lunaris KernelSU Next
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lunaris-ksunext-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      COMMON_COMMIT: 744d5c916fbbd6fb15f92c69c32de440d7345c6f
+      NEXT_COMMIT: 4c706b5938665866ebe16944a481a7b91e3396af
+      TOOLCHAIN_COMMIT: 54220fd601050b350b2af7adc913089ebf0e7aed
+      BOOT_TOOLS_COMMIT: d2bb0af5ba6d3198a3e99529c97eda1be0b5a093
+      ABI_EXTRACTOR_COMMIT: 2d094bc9c220b6b50f8215cbc3c9e581210ce1a6
+      BOOT_SHA256: f86ca8c2a1f731a921813cecf0de1d693ed795f684cfb10cf1140bee4781cc7d
+      MANAGER_SHA256: 774a5511f7034a4930e881114e202319cbdc34c5aaaa5c7c6b6d2902364e4c58
+      CCACHE_DIR: ${{ github.workspace }}/work/ccache
+    steps:
+      - name: Check out build definitions
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Reclaim hosted-runner disk and check capacity
+        run: |
+          set -euo pipefail
+          test "$GITHUB_ACTIONS" = true
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/local/share/powershell /opt/az /usr/share/swift
+          sudo docker system prune --all --force || true
+          df -h "$GITHUB_WORKSPACE"
+          available=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')
+          test "$available" -ge $((60 * 1024 * 1024)) || {
+            echo 'At least 60 GiB free space is required before fetching build inputs.' >&2
+            exit 1
+          }
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc binutils-aarch64-linux-gnu bison build-essential ccache cpio \
+            dwarves flex gcc-aarch64-linux-gnu git libelf-dev libssl-dev lz4 \
+            python3 python3-pip python3-venv rsync xz-utils
+
+      - name: Install pinned original-kernel ABI extractor
+        run: |
+          set -euo pipefail
+          python3 -m venv work/abi-venv
+          CC=gcc work/abi-venv/bin/pip install --no-cache-dir \
+            'pyelftools==0.32' \
+            "git+https://github.com/marin-m/vmlinux-to-elf.git@$ABI_EXTRACTOR_COMMIT"
+
+      - name: Run boot and ABI verifier tests
+        run: work/abi-venv/bin/python -m unittest discover -s tests -v
+
+      - name: Download and verify installed Lunaris boot image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download lunaris-boot-input --repo "$GITHUB_REPOSITORY" \
+            --pattern boot-current.img --output boot-current.img
+          printf '%s  %s\n' "$BOOT_SHA256" boot-current.img | sha256sum --check --strict
+          python3 scripts/prepare_lunaris_boot.py --boot boot-current.img --output-dir work/original
+
+      - name: Extract original exported-symbol ABI and exact whitelist
+        run: |
+          work/abi-venv/bin/python scripts/verify_kernel_abi.py \
+            --original-image work/original/kernel --report work/original/abi-baseline.json \
+            --export-whitelist work/original/abi_symbollist.raw
+
+      - name: Fetch pinned kernel, root core and boot tools
+        run: |
+          set -euo pipefail
+          mkdir -p work/source work/mkbootimg
+          git -C work/source init -q
+          git -C work/source remote add origin https://android.googlesource.com/kernel/common
+          git -C work/source fetch --depth=1 --no-tags origin "$COMMON_COMMIT"
+          git -C work/source checkout -q --detach FETCH_HEAD
+          test "$(git -C work/source rev-parse HEAD)" = "$COMMON_COMMIT"
+          git clone --filter=blob:none --single-branch --branch v3.4.2 \
+            https://github.com/KernelSU-Next/KernelSU-Next.git work/KernelSU-Next
+          test "$(git -C work/KernelSU-Next rev-parse HEAD)" = "$NEXT_COMMIT"
+          git -C work/mkbootimg init -q
+          git -C work/mkbootimg remote add origin https://android.googlesource.com/platform/system/tools/mkbootimg
+          git -C work/mkbootimg fetch --depth=1 --no-tags origin "$BOOT_TOOLS_COMMIT"
+          git -C work/mkbootimg checkout -q --detach FETCH_HEAD
+          test "$(git -C work/mkbootimg rev-parse HEAD)" = "$BOOT_TOOLS_COMMIT"
+
+      - name: Restore pinned Android Clang
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: work/toolchain
+          key: lunaris-clang-r416183b-${{ env.TOOLCHAIN_COMMIT }}
+
+      - name: Download pinned Android Clang
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p work/toolchain
+          curl --fail --location --retry 4 \
+            "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b/archive/$TOOLCHAIN_COMMIT.tar.gz" \
+            --output work/clang.tar.gz
+          tar -xzf work/clang.tar.gz -C work/toolchain --strip-components=1
+          rm work/clang.tar.gz
+
+      - name: Restore bounded compiler cache
+        uses: actions/cache@v4
+        with:
+          path: work/ccache
+          key: lunaris-ksunext-thin-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-${{ github.run_id }}
+          restore-keys: |
+            lunaris-ksunext-thin-${{ env.COMMON_COMMIT }}-${{ env.NEXT_COMMIT }}-
+
+      - name: Provision bounded swap
+        run: |
+          set -euo pipefail
+          if ! swapon --show --noheadings | grep -q .; then
+            sudo fallocate -l 6G /swap-lunaris.img
+            sudo chmod 600 /swap-lunaris.img
+            sudo mkswap /swap-lunaris.img
+            sudo swapon /swap-lunaris.img
+          fi
+          free -h
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Configure and compile Meteoric with built-in Next
+        run: |
+          bash scripts/build_lunaris_kernel.sh \
+            --source work/source --root-source work/KernelSU-Next \
+            --toolchain work/toolchain --config inputs/meteoric-5.10.237.config \
+            --abi-whitelist work/original/abi_symbollist.raw \
+            --output-dir work/build
+
+      - name: Verify original exported-symbol ABI
+        run: |
+          work/abi-venv/bin/python scripts/verify_kernel_abi.py --original-image work/original/kernel \
+            --symvers work/build/Module.symvers --report work/abi-report.json
+
+      - name: Repack boot image and verify preserved metadata
+        run: |
+          python3 scripts/repack_lunaris_boot.py --base boot-current.img \
+            --kernel work/build/Image --tools work/mkbootimg \
+            --output dist/boot-lunaris-ksunext-v3.4.2.img --partition-size 100663296
+
+      - name: Collect matching manager and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download v3.4.2 --repo KernelSU-Next/KernelSU-Next \
+            --pattern KernelSU_Next_v3.4.2_33355-release.apk --dir dist
+          printf '%s  %s\n' "$MANAGER_SHA256" dist/KernelSU_Next_v3.4.2_33355-release.apk | sha256sum --check --strict
+          cp work/build/Image work/build/Module.symvers work/build/System.map \
+            work/build/used.config work/build/config.diff work/build/config-drift.json \
+            work/build/kernelrelease.txt work/build/abi_symbollist.raw work/abi-report.json dist/
+          cp work/original/abi-baseline.json dist/original-abi-baseline.json
+          cp work/build/build.log dist/
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          def revision(directory):
+              return subprocess.check_output(['git', '-C', directory, 'rev-parse', 'HEAD'], text=True).strip()
+          def digest(path):
+              return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+          manifest = {
+              'device': 'Nothing Phone (2) / Pong',
+              'rom': 'installed LunarisOS',
+              'status': 'test candidate; device boot not verified',
+              'kernel_release': pathlib.Path('work/build/kernelrelease.txt').read_text().strip(),
+              'base_boot_sha256': digest('boot-current.img'),
+              'kernel_source': revision('work/source'),
+              'root_source': revision('work/KernelSU-Next'),
+              'root': 'KernelSU Next v3.4.2 / 33355, built in',
+              'susfs': False,
+              'toolchain_source': os.environ['TOOLCHAIN_COMMIT'],
+              'compiler': subprocess.check_output(['work/toolchain/bin/clang', '--version'], text=True).splitlines()[0],
+              'boot_tools_source': revision('work/mkbootimg'),
+              'abi_extractor_source': os.environ['ABI_EXTRACTOR_COMMIT'],
+              'abi_whitelist_sha256': digest('work/original/abi_symbollist.raw'),
+              'workflow_commit': os.environ['GITHUB_SHA'],
+              'workflow_url': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'abi_report': json.loads(pathlib.Path('work/abi-report.json').read_text()),
+          }
+          pathlib.Path('dist/provenance.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          pathlib.Path('dist/TEST-CANDIDATE.txt').write_text(
+              'Cloud build and static checks passed. Device boot has not been verified.\n'
+              'Keep the original boot image. Test with temporary fastboot boot before considering flashing.\n'
+              'Check Android, radio, Wi-Fi, camera, manager version and root allow/deny behavior.\n'
+              'This workflow does not flash or modify a phone.\n')
+          PY
+          (cd dist && sha256sum -- * > SHA256SUMS)
+
+      - name: Upload verified test candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-meteoric-ksunext-v3.4.2-test-candidate
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-ksunext-diagnostics-${{ github.run_attempt }}
+          path: |
+            work/original/metadata.json
+            work/original/abi-baseline.json
+            work/original/abi_symbollist.raw
+            work/build/build.log
+            work/build/.config
+            work/build/config.diff
+            work/build/config-drift.json
+            work/build/kernelrelease.txt
+            work/build/Module.symvers
+            work/build/System.map
+            work/abi-report.json
+          if-no-files-found: ignore
+          retention-days: 14

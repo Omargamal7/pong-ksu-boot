@@ -1,21 +1,60 @@
-# pong-ksu-boot
+# Pong boot images
 
-Off-device KernelSU-Next patcher for **Nothing Phone (2)** (codename `Pong`, GKI `android12-5.10`).
+Cloud-only boot-image preparation for Nothing Phone (2), codename `Pong`.
 
-The `Patch boot.img with KernelSU-Next` workflow takes the stock `boot.img` (uploaded
-as an asset named `boot.img` on the `input` release), patches it in **LKM mode** with the
-official `ksud boot-patch` on a Linux runner (keeps LineageOS's own kernel), and uploads
-the result as the `boot-kernelsu` artifact.
+## Installed Lunaris: replace built-in KernelSU with KernelSU Next
 
-## Use
-1. Upload a stock `boot.img` to the `input` release (asset name `boot.img`).
-2. Run the workflow (Actions → *Patch boot.img with KernelSU-Next* → Run).
-3. Download the `boot-kernelsu` artifact.
+Run **Actions → Build Lunaris KernelSU Next → Run workflow**. The workflow builds
+on a GitHub-hosted Ubuntu runner. Nothing runs on the phone, and no workflow
+flashes a partition.
 
-## Flash (fastboot)
+The input is the installed Lunaris image uploaded as `boot-current.img` in this
+repository's `lunaris-boot-input` release. It is **not an unmodified ROM download**:
+it already contains the older KernelSU. The verified input is:
+
+- Boot SHA-256: `f86ca8c2a1f731a921813cecf0de1d693ed795f684cfb10cf1140bee4781cc7d`.
+- Boot header v4, partition size 100663296 bytes (96 MiB).
+- Kernel `5.10.237-Meteoric`; saved config SHA-256
+  `a8b21ecc239eb1cbb9a72ccca8c5fa98c9833c2b003472fc840e099ef26ab778`.
+
+The build reuses the Meteoric recipe/configuration and AOSP repacking approach
+from `Omargamal7/pong-nos41-kernel-build` commit
+`e56490538b35ec3095a401fc1c1aba975910e590`. It starts from clean ACK commit
+`744d5c916fbbd6fb15f92c69c32de440d7345c6f` and integrates exactly one root core:
+official **KernelSU Next v3.4.2**, commit
+`4c706b5938665866ebe16944a481a7b91e3396af`, built in with `CONFIG_KSU=y`.
+No SUSFS patches are added. Thin LTO and runner disk cleanup address resource
+failures in the earlier workflow. The prior recipe is a reconstruction baseline;
+it is not proof of an exact reproduction of the shipped Meteoric source.
+
+Before packaging, the workflow extracts the original kernel's exported-symbol
+CRCs and checks every original export against the rebuilt kernel's
+`Module.symvers`. Missing exports, changed CRCs, incomplete extraction, unexpected
+configuration changes, or a changed kernel release fail the build. The original
+ramdisk and every boot header field except kernel length must survive repacking.
+The output must fit the original partition.
+
+A passing run provides `boot-lunaris-ksunext-v3.4.2.img`, the matching official
+manager APK, SHA-256 checksums, build/configuration logs and provenance. Failure
+diagnostics are retained separately and do not provide a boot candidate. The
+repacked image is compact and has no copied AVB footer or OEM signature.
+
+**A passing build is a test candidate.** Static ABI checks cannot establish
+hardware compatibility. Keep the original `boot-current.img` available for
+recovery. Temporary boot must confirm Android, radio, Wi-Fi, camera, the Next
+manager/driver version, and root allow/deny behavior before persistent use.
+No data wipe, vbmeta modification or inactive-slot change is part of this workflow.
+
+Validate the build definitions:
+
+```sh
+python3 -m unittest discover -s tests -v
+bash -n scripts/build_lunaris_kernel.sh
 ```
-fastboot flash boot boot-kernelsu.img
-# then disable AVB verification so the patched boot will boot:
-fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img
-```
-Source of the boot image: `lineage-23.2-*-nightly-Pong-signed.zip` (payload.bin → `boot`).
+
+## Earlier Lineage module patcher
+
+`Patch boot.img with KernelSU-Next` is the older, independent LKM workflow. It
+downloads `boot.img` from the `input` release and adds a root module. It does
+not remove an existing built-in KernelSU core and must not be used for this
+Lunaris replacement.
