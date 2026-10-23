@@ -1,0 +1,128 @@
+name: Build Lunaris Minimal ROM
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_ksunext_boot:
+        description: 'Include built-in KernelSU Next v3.4.2 boot.img from release if available'
+        required: false
+        default: false
+        type: boolean
+      publish_release:
+        description: 'Publish output ROM zip to GitHub release lunaris-minimal-3.6-pico'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lunaris-minimal-rom-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-minimal-rom:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      OFFICIAL_ROM_FILENAME: Lunaris-AOSP-Pong-OFFICIAL-3.6-Gapps-2025120905.zip
+      OFFICIAL_ROM_SHA256: 1462e100777330b7fd496fafde705dae6be582dc57c8bb2fea66474c487722ba
+      OFFICIAL_ROM_URL: https://sourceforge.net/projects/ghosuto/files/Pong/Lunaris-AOSP-Pong-OFFICIAL-3.6-Gapps-2025120905.zip/download
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Reclaim hosted-runner disk space
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          df -h "$GITHUB_WORKSPACE" > work/runner-storage.log
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/local/share/powershell /opt/az /usr/share/swift /usr/lib/jvm \
+            /usr/local/share/chromium /opt/google /opt/microsoft /usr/local/julia*
+          sudo docker system prune --all --force >/dev/null 2>&1 || true
+          sudo apt-get clean
+          df -h "$GITHUB_WORKSPACE" >> work/runner-storage.log
+          cat work/runner-storage.log
+          available=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')
+          test "$available" -ge $((35 * 1024 * 1024)) || {
+            echo 'At least 35 GiB free space is required before extracting ROM partitions.' >&2
+            exit 1
+          }
+
+      - name: Install ROM manipulation dependencies
+        timeout-minutes: 10
+        run: |
+          bash scripts/configure_cloud_apt.sh
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o DPkg::Lock::Timeout=120 -o Acquire::Retries=1 \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
+            curl e2fsprogs erofs-utils openssl python3 util-linux xz-utils
+
+      - name: Run unit tests
+        run: |
+          python3 -m unittest discover -s tests -v
+          bash -n scripts/build_lunaris_minimal_rom.sh
+
+      - name: Download and verify official Lunaris 3.6 ROM zip
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p work/minimal-rom
+          curl --fail --location --retry 3 --connect-timeout 30 \
+            "$OFFICIAL_ROM_URL" --output "work/minimal-rom/$OFFICIAL_ROM_FILENAME"
+          printf '%s  %s\n' "$OFFICIAL_ROM_SHA256" "work/minimal-rom/$OFFICIAL_ROM_FILENAME" | sha256sum --check --strict
+
+      - name: Optionally fetch verified KernelSU Next v3.4.2 boot image
+        id: ksunext-boot
+        if: ${{ inputs.include_ksunext_boot }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download lunaris-ksunext-v3.4.2-test-candidate --repo "$GITHUB_REPOSITORY" \
+            --pattern boot-lunaris-ksunext-v3.4.2.img --output work/minimal-rom/boot-ksunext.img
+          echo "boot_arg=--boot-image work/minimal-rom/boot-ksunext.img" >> "$GITHUB_OUTPUT"
+
+      - name: Build minimal Pico-GApps Lunaris 3.6 OTA zip
+        run: |
+          set -euo pipefail
+          boot_flags=()
+          if [ -n "${{ steps.ksunext-boot.outputs.boot_arg }}" ]; then
+            boot_flags=(--boot-image work/minimal-rom/boot-ksunext.img)
+          fi
+          bash scripts/build_lunaris_minimal_rom.sh \
+            --source-zip "work/minimal-rom/$OFFICIAL_ROM_FILENAME" \
+            --work-dir work/minimal-rom \
+            --output-dir dist/minimal-rom \
+            "${boot_flags[@]}"
+
+      - name: Upload minimal ROM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-pong-minimal-3.6-pico
+          path: dist/minimal-rom/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to GitHub Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RELEASE="lunaris-minimal-3.6-pico"
+          if gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE" dist/minimal-rom/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE" dist/minimal-rom/* --repo "$GITHUB_REPOSITORY" --prerelease \
+              --target "$GITHUB_SHA" \
+              --title "Lunaris-AOSP 3.6 Minimal (Pico GApps / Low Idle RAM) for Pong" \
+              --notes-file dist/minimal-rom/FLASH-INSTRUCTIONS.txt
+          fi

@@ -155,3 +155,35 @@ are wanted. Existing Actions runs continue independently.
 downloads `boot.img` from the `input` release and adds a root module. It does
 not remove an existing built-in KernelSU core and must not be used for this
 Lunaris replacement.
+
+## Lunaris 3.6 Minimal ROM (Pico GApps / Lowest Running Heads & Idle RAM)
+
+Run **Actions → Build Lunaris Minimal ROM → Run workflow** (defined in
+[`.github/workflows/build-lunaris-minimal-rom.yml`](.github/workflows/build-lunaris-minimal-rom.yml))
+or run [`scripts/build_lunaris_minimal_rom.sh`](scripts/build_lunaris_minimal_rom.sh)
+on an `x86_64` Linux cloud runner / Codespace to repack the official
+`Lunaris-AOSP-Pong-OFFICIAL-3.6-Gapps-2025120905.zip` (SHA-256
+`1462e100777330b7fd496fafde705dae6be582dc57c8bb2fea66474c487722ba`) into
+`Lunaris-AOSP-Pong-Minimal-3.6-Pico.zip`.
+
+- [`scripts/lunaris_rom_profile.py`](scripts/lunaris_rom_profile.py):
+  Declaratively strips ~2.1 GB of uncompressed bloat across `/product`,
+  `/system_ext`, `/system`, and `/vendor` while protecting core telephony,
+  camera, Bluetooth, Wi-Fi, UDFPS, QuickStep launcher, and Pico GApps
+  (`PrebuiltGmsCore`, `Phonesky`, `GoogleServicesFramework`, `GoogleDialer`,
+  `PrebuiltBugle`, `GoogleContacts`, `LatinIMEGooglePrebuilt`, `WebViewGoogle`).
+  Removes Qualcomm telemetry/tracing/diagnostic daemons (`diag-router`,
+  `qcc-trd`, `qccsyshal`, `dpmd`, `dpmQmiMgr`, `tcmd`, `ssgtzd`, `dataadpl`,
+  `dataqti`, `traced`, `heapprofd`, `incidentd`), AI/ML services (`AICore`,
+  `DevicePersonalizationServices`/`AiAi`, `PrivateComputeServices`/`astrea`,
+  `PixelAI`, `Velvet`, `Wellbeing`, `Turbo`, `HotwordEnrollment`), NFC/eSE,
+  Print/mDNS, Wi-Fi Display, TrustedUI/Soter/eID/VPP, and ~180 RRO theme
+  overlays. Tunes Dalvik heap & vdex/odex madvise properties, disables
+  WindowBlur, caps cached/phantom process pools via
+  `/system/etc/init/init.lunaris.minimal.rc`, and patches `vbmeta_system` and
+  `vbmeta_vendor` AVB flags (`flags=3`).
+- [`scripts/lunaris_payload.py`](scripts/lunaris_payload.py):
+  Pure-Python `CrAU` v2 OTA payload extractor, parallel `XZ` (`CHECK_NONE`) +
+  `ZERO` block encoder, RSA-2048 PKCS#1 v1.5 SHA-256 signer, and A/B OTA zip
+  repacker.
+
